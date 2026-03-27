@@ -59,7 +59,7 @@ router.get('/recurrings', async (req, res, next) => {
     const userId = Number(req.auth?.userId || req.query.userId);
     if (!userId) return res.status(400).json({ error: 'userId_required' });
     const rows = await query(
-      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, interval, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at, created_at
+      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, \`interval\`, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at, created_at
        FROM recurrings
        WHERE user_id = ?
        ORDER BY created_at DESC`,
@@ -97,7 +97,7 @@ router.post('/recurrings', async (req, res, next) => {
       [uid, account_id, category_id, type, amount, description, frequency, interval, day_of_month, day_of_week, start_date, end_date, next_run_at]
     );
     const [row] = await query(
-      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, interval, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at, created_at
+      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, \`interval\`, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at, created_at
        FROM recurrings WHERE id = ?`,
       [result.insertId]
     );
@@ -141,7 +141,7 @@ router.put('/recurrings/:id', async (req, res, next) => {
       ]
     );
     const [row] = await query(
-      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, interval, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at, created_at
+      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, \`interval\`, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at, created_at
        FROM recurrings WHERE id = ?`,
       [id]
     );
@@ -169,7 +169,7 @@ router.post('/recurrings/run-due', async (req, res, next) => {
     const now = new Date();
     const nowSql = toSqlDatetime(now);
     const rules = await query(
-      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, interval, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at
+      `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, \`interval\`, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at
        FROM recurrings
        WHERE user_id = ? AND next_run_at <= ? AND (end_date IS NULL OR next_run_at <= end_date)
        ORDER BY next_run_at ASC`,
