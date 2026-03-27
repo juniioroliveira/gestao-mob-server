@@ -3,33 +3,6 @@ import { query } from '../db/query.js';
  
 const router = Router();
  
-async function ensureRecurringsTable() {
-  try {
-    await query(`
-      CREATE TABLE IF NOT EXISTS recurrings (
-        id BIGINT PRIMARY KEY AUTO_INCREMENT,
-        user_id BIGINT NOT NULL,
-        account_id BIGINT NULL,
-        category_id BIGINT NULL,
-        type ENUM('income','expense','transfer') NOT NULL,
-        amount DECIMAL(18,2) NOT NULL,
-        description VARCHAR(255) NULL,
-        frequency ENUM('daily','weekly','monthly') NOT NULL,
-        \`interval\` INT NOT NULL DEFAULT 1,
-        day_of_month TINYINT NULL,
-        day_of_week TINYINT NULL,
-        start_date DATE NOT NULL,
-        end_date DATE NULL,
-        next_run_at DATETIME NOT NULL,
-        last_run_at DATETIME NULL,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_recurring_user (user_id),
-        INDEX idx_recurring_next (next_run_at)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `);
-  } catch {}
-}
- 
 function pad(n) {
   return String(n).padStart(2, '0');
 }
@@ -85,7 +58,6 @@ router.get('/recurrings', async (req, res, next) => {
   try {
     const userId = Number(req.auth?.userId || req.query.userId);
     if (!userId) return res.status(400).json({ error: 'userId_required' });
-    await ensureRecurringsTable();
     const rows = await query(
       `SELECT id, user_id, account_id, category_id, type, amount, description, frequency, \`interval\`, day_of_month, day_of_week, start_date, end_date, next_run_at, last_run_at, created_at
        FROM recurrings
@@ -119,7 +91,6 @@ router.post('/recurrings', async (req, res, next) => {
     const start = new Date(start_date.replace('T', ' ').replace('Z', ''));
     const initialNext = computeNextRun({ frequency, interval, day_of_month, day_of_week }, start);
     const next_run_at = toSqlDatetime(initialNext);
-    await ensureRecurringsTable();
     const result = await query(
       `INSERT INTO recurrings (user_id, account_id, category_id, type, amount, description, frequency, \`interval\`, day_of_month, day_of_week, start_date, end_date, next_run_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
