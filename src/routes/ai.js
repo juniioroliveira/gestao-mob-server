@@ -3,6 +3,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { config } from '../config/env.js';
 import multer from 'multer';
 import sharp from 'sharp';
+import { query } from '../db/query.js';
 
 const router = Router();
 
@@ -45,13 +46,15 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
           parts: [
             {
               text:
-                'Analise este comprovante ou documento e extraia os detalhes da transação. ' +
-                'Retorne APENAS um objeto JSON com os campos: ' +
-                'title (nome do estabelecimento ou descrição), ' +
-                'category (deve ser um destes: Alimentação, Lazer, Tecnologia, Renda, Transporte, Outros), ' +
-                'amount (valor formatado como R$ 0,00), ' +
-                'isPositive (boolean, true se for entrada/recebimento, false se for gasto/pagamento), ' +
-                "date (data formatada como 'DD MMM, HH:mm').",
+                'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com o contrato da tabela de transações: ' +
+                'type (income|expense|transfer), ' +
+                'amount (número decimal, ponto como separador, ex: 54.52), ' +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', use horário local do Brasil), " +
+                'description (texto curto do estabelecimento/descrição), ' +
+                'category_name (um destes: Alimentação, Lazer, Tecnologia, Renda, Transporte, Outros). ' +
+                'Se a data do documento estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
+                'Nunca inclua valores formatados com R$, apenas número em amount. ' +
+                'Saída deve ser somente JSON sem comentários.',
             },
             { inlineData: { data, mimeType } },
           ],
@@ -62,16 +65,16 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            title: { type: Type.STRING },
-            category: {
+            type: { type: Type.STRING, enum: ['income', 'expense', 'transfer'] },
+            amount: { type: Type.NUMBER },
+            occurred_at: { type: Type.STRING },
+            description: { type: Type.STRING },
+            category_name: {
               type: Type.STRING,
               enum: ['Alimentação', 'Lazer', 'Tecnologia', 'Renda', 'Transporte', 'Outros'],
             },
-            amount: { type: Type.STRING },
-            isPositive: { type: Type.BOOLEAN },
-            date: { type: Type.STRING },
           },
-          required: ['title', 'category', 'amount', 'isPositive', 'date'],
+          required: ['type', 'amount', 'occurred_at', 'description', 'category_name'],
         },
       },
     });
@@ -84,7 +87,50 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     } catch {
       return res.status(502).json({ error: 'invalid_ai_json', raw: text });
     }
-    return res.json(parsed);
+    const userId = Number(req.auth?.userId || req.query.userId);
+    // Normalize amount
+    const amount = Number(parsed?.amount);
+    // Normalize occurred_at to 'YYYY-MM-DD HH:mm:ss'
+    function toSqlDatetime(s) {
+      const tryDate = new Date(s);
+      if (!isNaN(tryDate.getTime())) {
+        const pad = (n) => String(n).padStart(2, '0');
+        const yyyy = tryDate.getFullYear();
+        const MM = pad(tryDate.getMonth() + 1);
+        const dd = pad(tryDate.getDate());
+        const hh = pad(tryDate.getHours());
+        const mm = pad(tryDate.getMinutes());
+        const ss = pad(tryDate.getSeconds());
+        return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}`;
+      }
+      return new Date().toISOString().slice(0, 19).replace('T', ' ');
+    }
+    const occurred_at = toSqlDatetime(parsed?.occurred_at);
+    const description = String(parsed?.description || '').trim();
+    const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
+    // Map category_name -> category_id
+    let category_id = null;
+    if (userId) {
+      try {
+        const cats = await query('SELECT id, name FROM categories WHERE user_id = ?', [userId]);
+        const match = cats.find((c) => String(c.name).toLowerCase() === String(parsed?.category_name || '').toLowerCase());
+        category_id = match ? Number(match.id) : null;
+      } catch {}
+    }
+    // Heuristic: map account_id for liabilities if description suggests "fatura/cartão"
+    let account_id = null;
+    if (userId) {
+      const descLower = description.toLowerCase();
+      if (descLower.includes('fatura') || descLower.includes('cartão')) {
+        try {
+          const accs = await query('SELECT id, name, type FROM accounts WHERE user_id = ?', [userId]);
+          const match = accs.find((a) => String(a.name).toLowerCase().includes('cartão') || String(a.type) === 'liability');
+          account_id = match ? Number(match.id) : null;
+        } catch {}
+      }
+    }
+    const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description };
+    return res.json(result);
   } catch (e) {
     const msg = e?.message || '';
     if (msg.includes('File too large')) {
