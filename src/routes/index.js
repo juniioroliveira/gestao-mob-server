@@ -7,6 +7,7 @@ import transactions from './transactions.js';
 import summary from './summary.js';
 import auth from './auth.js';
 import ai from './ai.js';
+import recurrings from './recurrings.js';
 import { ensureAuth, optionalAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -19,5 +20,6 @@ router.use(accounts);
 router.use(transactions);
 router.use(summary);
 router.use(ai);
+router.use(recurrings);
 
 export default router;
