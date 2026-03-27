@@ -8,7 +8,13 @@ router.get('/db/ping', async (req, res, next) => {
     const rows = await query('SELECT 1 AS ok');
     res.json(rows[0] || { ok: 1 });
   } catch (e) {
-    next(e);
+    res.status(500).json({
+      error: 'db_error',
+      message: e?.message,
+      code: e?.code,
+      errno: e?.errno,
+      sqlState: e?.sqlState,
+    });
   }
 });
 
