@@ -15,4 +15,5 @@ export const config = {
   demoUserEmail: process.env.DEMO_USER_EMAIL || 'demo@local',
   demoUserName: process.env.DEMO_USER_NAME || 'Demo User',
   demoUserPassword: process.env.DEMO_USER_PASSWORD || 'demo123',
+  geminiApiKey: process.env.GEMINI_API_KEY || '',
 };
