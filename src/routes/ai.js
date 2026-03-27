@@ -1,14 +1,40 @@
 import { Router } from 'express';
 import { GoogleGenAI, Type } from '@google/genai';
 import { config } from '../config/env.js';
+import multer from 'multer';
+import sharp from 'sharp';
 
 const router = Router();
 
-router.post('/ai/extract-transaction', async (req, res, next) => {
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+router.post('/ai/extract-transaction', upload.single('file'), async (req, res, next) => {
   try {
-    const { data, mimeType } = req.body || {};
     const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: 'missing_gemini_key' });
+
+    let data = null;
+    let mimeType = null;
+
+    if (req.file && req.file.buffer) {
+      mimeType = req.file.mimetype;
+      const isImage = mimeType?.startsWith('image/');
+      if (isImage) {
+        const buf = await sharp(req.file.buffer).rotate().resize({ width: 1280, withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();
+        data = buf.toString('base64');
+        mimeType = 'image/jpeg';
+      } else {
+        data = req.file.buffer.toString('base64');
+      }
+    } else {
+      const body = req.body || {};
+      data = body.data;
+      mimeType = body.mimeType;
+    }
+
     if (!data || !mimeType) return res.status(400).json({ error: 'invalid_body' });
 
     const ai = new GoogleGenAI({ apiKey });
@@ -60,7 +86,11 @@ router.post('/ai/extract-transaction', async (req, res, next) => {
     }
     return res.json(parsed);
   } catch (e) {
-    next(e);
+    const msg = e?.message || '';
+    if (msg.includes('File too large')) {
+      return res.status(413).json({ error: 'payload_too_large', message: msg });
+    }
+    return res.status(500).json({ error: 'internal_error', message: msg });
   }
 });
 
