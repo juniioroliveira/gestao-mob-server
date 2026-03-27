@@ -4,7 +4,7 @@ dotenv.config();
 export const config = {
   port: Number(process.env.PORT || '3001'),
   db: {
-    host: process.env.DB_HOST || '',
+    host: process.env.DB_HOST || 'localhost',
     port: Number(process.env.DB_PORT || '3306'),
     database: process.env.DB_NAME || '',
     user: process.env.DB_USER || '',
