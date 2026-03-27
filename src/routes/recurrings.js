@@ -92,7 +92,7 @@ router.post('/recurrings', async (req, res, next) => {
     const initialNext = computeNextRun({ frequency, interval, day_of_month, day_of_week }, start);
     const next_run_at = toSqlDatetime(initialNext);
     const result = await query(
-      `INSERT INTO recurrings (user_id, account_id, category_id, type, amount, description, frequency, interval, day_of_month, day_of_week, start_date, end_date, next_run_at)
+      `INSERT INTO recurrings (user_id, account_id, category_id, type, amount, description, frequency, \`interval\`, day_of_month, day_of_week, start_date, end_date, next_run_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [uid, account_id, category_id, type, amount, description, frequency, interval, day_of_month, day_of_week, start_date, end_date, next_run_at]
     );
@@ -119,7 +119,7 @@ router.put('/recurrings/:id', async (req, res, next) => {
          amount = COALESCE(?, amount),
          description = COALESCE(?, description),
          frequency = COALESCE(?, frequency),
-         interval = COALESCE(?, interval),
+         \`interval\` = COALESCE(?, \`interval\`),
          day_of_month = COALESCE(?, day_of_month),
          day_of_week = COALESCE(?, day_of_week),
          start_date = COALESCE(?, start_date),
