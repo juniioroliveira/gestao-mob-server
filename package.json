@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "node src/index.js",
     "start": "node src/index.js",
-    "migrate": "node src/db/migrate.js"
+    "migrate": "node src/db/migrate.js",
+    "seed": "node src/db/seed.js",
+    "build": "git add -A && if git diff --cached --quiet; then echo 'No changes to commit'; else git commit -m \"chore(build): auto-commit\" && git push; fi"
   },
   "dependencies": {
     "cors": "^2.8.5",
