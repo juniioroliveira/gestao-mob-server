@@ -90,7 +90,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
                 'description (um título curto e CANÔNICO da natureza do gasto/recebimento; evite variações) ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
-                'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
+                'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' + 
                 'Nunca inclua valores formatados com R$, apenas número em amount. ' +
                 'A saída deve ser somente JSON sem comentários. ' +
                 'Inclua também um campo metadata com os dados do DOCUMENTO contendo (preencher SEMPRE issuer_name e document_type): ' +
