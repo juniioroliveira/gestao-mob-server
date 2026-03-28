@@ -38,6 +38,14 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
 
     if (!data || !mimeType) return res.status(400).json({ error: 'invalid_body' });
 
+    const userId = Number(req.auth?.userId || req.query.userId);
+    let categories = [];
+    if (userId) {
+      try {
+        categories = await query('SELECT id, name FROM categories WHERE user_id = ?', [userId]);
+      } catch {}
+    }
+
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -46,15 +54,21 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
           parts: [
             {
               text:
-                'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com o contrato da tabela de transações: ' +
+                'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
                 'type (income|expense|transfer), ' +
-                'amount (número decimal, ponto como separador, ex: 54.52), ' +
-                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', use horário local do Brasil), " +
-                'description (texto curto do estabelecimento/descrição), ' +
-                'category_name (um destes: Alimentação, Lazer, Tecnologia, Renda, Transporte, Outros). ' +
-                'Se a data do documento estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
+                'amount (número decimal com ponto, ex: 54.52), ' +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil), " +
+                'description (nome amigável do serviço/estabelecimento, evitando razão social e sufixos como LTDA, EIRELI, CNPJ), ' +
+                'category_id (um ID escolhido da lista fornecida). ' +
+                'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
                 'Nunca inclua valores formatados com R$, apenas número em amount. ' +
-                'Saída deve ser somente JSON sem comentários.',
+                'A saída deve ser somente JSON sem comentários.',
+            },
+            {
+              text:
+                'Categorias disponíveis do usuário com seus IDs: ' +
+                JSON.stringify(categories.map((c) => ({ id: Number(c.id), name: String(c.name) }))) +
+                '. Escolha o category_id que melhor representa a transação.',
             },
             { inlineData: { data, mimeType } },
           ],
@@ -69,12 +83,9 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
             amount: { type: Type.NUMBER },
             occurred_at: { type: Type.STRING },
             description: { type: Type.STRING },
-            category_name: {
-              type: Type.STRING,
-              enum: ['Alimentação', 'Lazer', 'Tecnologia', 'Renda', 'Transporte', 'Outros'],
-            },
+            category_id: { type: Type.NUMBER },
           },
-          required: ['type', 'amount', 'occurred_at', 'description', 'category_name'],
+          required: ['type', 'amount', 'occurred_at', 'description'],
         },
       },
     });
@@ -87,7 +98,6 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     } catch {
       return res.status(502).json({ error: 'invalid_ai_json', raw: text });
     }
-    const userId = Number(req.auth?.userId || req.query.userId);
     // Normalize amount
     const amount = Number(parsed?.amount);
     // Normalize occurred_at to 'YYYY-MM-DD HH:mm:ss'
@@ -106,16 +116,27 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       return new Date().toISOString().slice(0, 19).replace('T', ' ');
     }
     const occurred_at = toSqlDatetime(parsed?.occurred_at);
-    const description = String(parsed?.description || '').trim();
+    function cleanDescription(s) {
+      return String(s || '')
+        .replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+    }
+    const description = cleanDescription(parsed?.description);
     const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
-    // Map category_name -> category_id
     let category_id = null;
-    if (userId) {
-      try {
-        const cats = await query('SELECT id, name FROM categories WHERE user_id = ?', [userId]);
-        const match = cats.find((c) => String(c.name).toLowerCase() === String(parsed?.category_name || '').toLowerCase());
+    if (Array.isArray(categories) && categories.length) {
+      const cid = Number(parsed?.category_id);
+      if (Number.isFinite(cid) && categories.some((c) => Number(c.id) === cid)) {
+        category_id = cid;
+      } else {
+        const cname = String(parsed?.category_name || '').toLowerCase();
+        const match = categories.find((c) => String(c.name).toLowerCase() === cname);
         category_id = match ? Number(match.id) : null;
-      } catch {}
+      }
+    } else {
+      const cid = Number(parsed?.category_id);
+      category_id = Number.isFinite(cid) ? cid : null;
     }
     // Heuristic: map account_id for liabilities if description suggests "fatura/cartão"
     let account_id = null;
