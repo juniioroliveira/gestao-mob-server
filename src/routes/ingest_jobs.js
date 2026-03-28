@@ -114,11 +114,7 @@ router.post('/ingest-jobs/:id/approve', async (req, res, next) => {
       const dt = parseBrDatetime(c);
       if (dt) { occurred_at = dt; break; }
     }
-    if (!occurred_at) {
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, '0');
-      occurred_at = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    }
+    if (!occurred_at) occurred_at = null;
     const description = payload.description || job.ai_output?.description;
     const category_id = payload.category_id ?? job.ai_output?.category_id ?? null;
     const inscricao_federal = payload.inscricao_federal ?? job.ai_output?.inscricao_federal ?? null;

@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "migrate": "node src/db/migrate.js",
     "seed": "node src/db/seed.js",
-    "build": "git add -A && if git diff --cached --quiet; then echo 'No changes to commit'; else git commit -m \"chore(build): auto-commit\" && git push; fi"
+    "build": "git add -A && if git diff --cached --quiet; then echo 'No changes to commit'; else git commit -m \"chore(build): auto-commit\" && git push; fi",
+    "migrate:tx-null": "node src/db/migrate_tx_occurred_nullable.js"
   },
   "dependencies": {
     "@google/genai": "^1.46.0",

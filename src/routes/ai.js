@@ -395,12 +395,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         } catch {}
       }
       if (!category_id) category_id = heuristicCategoryIdByDocType(doc_type_norm, catList) || heuristicCategoryIdByDescription(description, catList) || null;
-      const nowSql = (() => {
-        const d = new Date();
-        const pad = (n) => String(n).padStart(2, '0');
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-      })();
-      const occurred_at_sql = occurred_at || nowSql;
+      const occurred_at_sql = occurred_at || null;
       try {
         const insert = await query(
           'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -643,12 +638,7 @@ export async function processIngestJobById(jobId) {
         if (Number.isFinite(hid) && hid > 0) category_id = hid;
       } catch {}
     }
-    const nowSql = (() => {
-      const d = new Date();
-      const pad = (n) => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-    })();
-    const occurred_at_sql = occurred_at || nowSql;
+    const occurred_at_sql = occurred_at || null;
     const requiredOk = type && Number.isFinite(amount) && description && String(description).length > 0;
     if (!requiredOk) {
       await query('UPDATE ingest_jobs SET status = ?, ai_output = ? WHERE id = ?', ['needs_review', JSON.stringify({ type, amount, occurred_at, description, category_id }), jobId]);
