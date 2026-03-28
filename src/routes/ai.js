@@ -176,6 +176,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
           const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
     const issuer_name_norm2 = canonicalIssuerName(docMeta?.issuer_name || null, description);
     const doc_type_norm2 = canonicalDocType(description, issuer_name_norm2) || docMeta?.document_type || null;
+    description = canonicalTitle(doc_type_norm2, issuer_name_norm2, description);
     const metadata = {
             source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
             document: {
@@ -415,6 +416,15 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       if (/recibo/.test(d)) return 'Recibo';
       return null;
     }
+  function canonicalTitle(docType, issuer, desc) {
+    const base = String(desc || '').trim();
+    const dt = String(docType || '').trim();
+    const isr = String(issuer || '').trim();
+    if (dt && isr) return `${dt} - ${isr}`;
+    if (dt) return dt;
+    if (isr && base && !base.toLowerCase().includes(isr.toLowerCase())) return `${base} - ${isr}`;
+    return base || isr || '';
+  }
     function heuristicCategoryIdByDocType(docType, catList) {
       if (!docType) return null;
       const nameNorm = normalizeText(docType);
@@ -503,6 +513,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     }
       const issuer_name_norm = canonicalIssuerName(docMeta?.issuer_name || null, description);
       const doc_type_norm = canonicalDocType(description, issuer_name_norm) || docMeta?.document_type || null;
+      description = canonicalTitle(doc_type_norm, issuer_name_norm, description);
       const metadata = {
       source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
       document: {
