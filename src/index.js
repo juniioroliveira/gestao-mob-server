@@ -3,6 +3,7 @@ import cors from 'cors';
 import routes from './routes/index.js';
 import { config } from './config/env.js';
 import { ensureDemoUser } from './bootstrap/demo-user.js';
+import { query } from './db/query.js';
 
 const app = express();
 app.use(cors());
@@ -48,6 +49,13 @@ app.use('/api', routes);
 app.get('/', (req, res) => {
   res.json({ name: 'gestao-mob-api' });
 });
+setInterval(async () => {
+  try {
+    await query(
+      "UPDATE ingest_jobs SET status = 'queued', error = 'requeued_stale' WHERE status = 'processing' AND updated_at < (NOW() - INTERVAL 10 MINUTE)"
+    );
+  } catch {}
+}, 60 * 1000);
 app.use((err, req, res, next) => {
   const payload = {
     error: 'internal_error',
