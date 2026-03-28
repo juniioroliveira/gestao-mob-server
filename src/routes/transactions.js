@@ -43,6 +43,21 @@ router.get('/transactions', async (req, res, next) => {
   }
 });
 
+router.get('/transactions/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'invalid_id' });
+    const [row] = await query(
+      'SELECT id, user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata, created_at FROM transactions WHERE id = ?',
+      [id]
+    );
+    if (!row) return res.status(404).json({ error: 'not_found' });
+    res.json(row);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post('/transactions', async (req, res, next) => {
   try {
     const { user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata } = req.body || {};
