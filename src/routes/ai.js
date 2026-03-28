@@ -177,6 +177,16 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     const issuer_name_norm2 = canonicalIssuerName(docMeta?.issuer_name || null, description);
     const doc_type_norm2 = canonicalDocType(description, issuer_name_norm2) || docMeta?.document_type || null;
     description = canonicalTitle(doc_type_norm2, issuer_name_norm2, description);
+          if (!category_id && userId) {
+            try {
+              const hist = await query(
+                'SELECT category_id FROM transactions WHERE user_id = ? AND description = ? AND category_id IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1',
+                [userId, description]
+              );
+              const hid = Number(hist?.[0]?.category_id || 0);
+              if (Number.isFinite(hid) && hid > 0) category_id = hid;
+            } catch {}
+          }
     const metadata = {
             source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
             document: {
@@ -544,6 +554,16 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     };
     const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal: inscricao_federal_out, metadata };
     if (autoCreate && userId) {
+      if (!category_id && userId && description) {
+        try {
+          const hist = await query(
+            'SELECT category_id FROM transactions WHERE user_id = ? AND description = ? AND category_id IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1',
+            [userId, description]
+          );
+          const hid = Number(hist?.[0]?.category_id || 0);
+          if (Number.isFinite(hid) && hid > 0) category_id = hid;
+        } catch {}
+      }
       if (!category_id) category_id = heuristicCategoryIdByDocType(doc_type_norm, catList) || heuristicCategoryIdByDescription(description, catList) || null;
       const nowSql = (() => {
         const d = new Date();
