@@ -397,7 +397,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       if (!category_id) category_id = heuristicCategoryIdByDocType(doc_type_norm, catList) || heuristicCategoryIdByDescription(description, catList) || null;
       const occurred_at_sql = occurred_at || null;
       try {
-        const insert = await query(
+        const insert = await query( 
           'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             userId,
