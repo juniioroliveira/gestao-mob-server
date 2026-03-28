@@ -469,7 +469,7 @@ export async function processIngestJobById(jobId) {
                 'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
-                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; em faturas use a data de vencimento, em comprovantes use a data do documento; se não encontrar no documento, retorne null), " +
                 'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
                 'description (um título curto que descreve a NATUREZA do gasto/recebimento), ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
