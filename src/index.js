@@ -52,22 +52,27 @@ app.get('/', (req, res) => {
 });
 setInterval(async () => {
   try {
-    await query(
-      "UPDATE ingest_jobs SET status = 'queued', error = 'requeued_stale' WHERE status = 'processing' AND updated_at < (NOW() - INTERVAL 10 MINUTE)"
-    );
+    await query("UPDATE ingest_jobs SET status = 'queued', error = 'requeued_stale' WHERE status = 'processing' AND updated_at < (NOW() - INTERVAL ? MINUTE)", [config.ingest?.staleMinutes ?? 10]);
   } catch {}
 }, 60 * 1000);
 setTimeout(async () => {
   try {
+    // Ensure backoff columns exist (best-effort, ignore errors if they already exist or server lacks privileges)
+    try { await query("ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0"); } catch {}
+    try { await query("ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS max_attempts INT NULL"); } catch {}
+    try { await query("ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS next_attempt_at DATETIME NULL"); } catch {}
+    try { await query("ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS last_attempt_at DATETIME NULL"); } catch {}
+    // Set defaults where missing
+    try { await query("UPDATE ingest_jobs SET max_attempts = ? WHERE max_attempts IS NULL", [config.ingest?.maxAttempts ?? 5]); } catch {}
     await query("UPDATE ingest_jobs SET status = 'queued', error = COALESCE(error,'requeued_on_boot') WHERE status = 'processing'");
   } catch {}
   let pumping = false;
   async function claimNext() {
     try {
-      const rows = await query("SELECT id FROM ingest_jobs WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1");
+      const rows = await query("SELECT id FROM ingest_jobs WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= NOW()) ORDER BY created_at ASC, id ASC LIMIT 1");
       const id = Number(rows?.[0]?.id || 0);
       if (!id) return null;
-      const res = await query("UPDATE ingest_jobs SET status = 'processing', updated_at = NOW() WHERE id = ? AND status = 'queued'", [id]);
+      const res = await query("UPDATE ingest_jobs SET status = 'processing', attempts = attempts + 1, last_attempt_at = NOW(), updated_at = NOW() WHERE id = ? AND status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= NOW()) AND (max_attempts IS NULL OR attempts < max_attempts)", [id]);
       if (res?.affectedRows === 1) return id;
       return null;
     } catch {
@@ -88,7 +93,7 @@ setTimeout(async () => {
     }
   }
   await pump();
-  setInterval(pump, 3000);
+  setInterval(pump, config.ingest?.pumpIntervalMs ?? 3000);
 }, 0);
 app.use((err, req, res, next) => {
   const payload = {

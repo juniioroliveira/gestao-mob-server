@@ -3,6 +3,36 @@ import { query } from '../db/query.js';
 
 const router = Router();
 
+router.get('/ingest-jobs/metrics', async (_req, res, next) => {
+  try {
+    const [counts] = await Promise.all([
+      query(
+        `SELECT status, COUNT(*) AS count
+         FROM ingest_jobs
+         GROUP BY status`
+      ),
+    ]);
+    const map = {};
+    for (const r of counts) map[String(r.status)] = Number(r.count || 0);
+    const [oldest] = await query(
+      `SELECT MIN(created_at) AS oldest_created, COUNT(*) AS total
+       FROM ingest_jobs
+       WHERE status IN ('queued','processing')`
+    );
+    res.json({
+      queued: map.queued || 0,
+      processing: map.processing || 0,
+      needs_review: map.needs_review || 0,
+      failed: map.failed || 0,
+      done: map.done || 0,
+      oldestQueuedOrProcessingAt: oldest?.oldest_created || null,
+      totalQueuedOrProcessing: Number(oldest?.total || 0),
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.get('/ingest-jobs', async (req, res, next) => {
   try {
     const userId = Number(req.auth?.userId || req.query.userId);

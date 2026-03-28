@@ -16,4 +16,11 @@ export const config = {
   demoUserName: process.env.DEMO_USER_NAME || 'Demo User',
   demoUserPassword: process.env.DEMO_USER_PASSWORD || 'demo123',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
+  ingest: {
+    maxAttempts: Number(process.env.INGEST_MAX_ATTEMPTS || '5'),
+    retryBaseSeconds: Number(process.env.INGEST_RETRY_BASE_SECONDS || '30'),
+    retryMaxSeconds: Number(process.env.INGEST_RETRY_MAX_SECONDS || '3600'),
+    staleMinutes: Number(process.env.INGEST_STALE_MINUTES || '10'),
+    pumpIntervalMs: Number(process.env.INGEST_PUMP_INTERVAL_MS || '3000'),
+  },
 };

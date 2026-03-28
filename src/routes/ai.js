@@ -414,7 +414,13 @@ export async function processIngestJobById(jobId) {
     const userId = Number(job.user_id);
     const data = String(job.data_base64 || '');
     const mimeType = String(job.mime_type || '');
-    await query('UPDATE ingest_jobs SET status = ? WHERE id = ?', ['processing', jobId]);
+    const attempts = Number(job.attempts || 0);
+    const maxAttempts = Number(job.max_attempts || config.ingest?.maxAttempts || 5);
+    if (Number.isFinite(maxAttempts) && attempts >= maxAttempts) {
+      await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', 'max_attempts_reached', jobId]);
+      return;
+    }
+    await query('UPDATE ingest_jobs SET status = ?, attempts = attempts + 1, last_attempt_at = NOW() WHERE id = ?', ['processing', jobId]);
     let categories = [];
     try {
       categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
@@ -475,14 +481,16 @@ export async function processIngestJobById(jobId) {
     });
     const text = response?.text;
     if (!text) {
-      await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', 'empty_ai_response', jobId]);
+      const nextSec = Math.min((config.ingest?.retryBaseSeconds || 30) * Math.pow(2, attempts), config.ingest?.retryMaxSeconds || 3600);
+      await query('UPDATE ingest_jobs SET status = ?, error = ?, next_attempt_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ?', ['queued', 'empty_ai_response', nextSec, jobId]);
       return;
     }
     let parsed;
     try {
       parsed = JSON.parse(text);
     } catch {
-      await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', 'invalid_ai_json', jobId]);
+      const nextSec = Math.min((config.ingest?.retryBaseSeconds || 30) * Math.pow(2, attempts), config.ingest?.retryMaxSeconds || 3600);
+      await query('UPDATE ingest_jobs SET status = ?, error = ?, next_attempt_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ?', ['queued', 'invalid_ai_json', nextSec, jobId]);
       return;
     }
     const amount = Number(parsed?.amount);
@@ -593,10 +601,19 @@ export async function processIngestJobById(jobId) {
       'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [userId, null, category_id || null, type, Number.isFinite(amount) ? amount : 0, occurred_at_sql, description || null, inscricao_federal_out || null, JSON.stringify({ source: { mimeType, isImage: String(mimeType || '').startsWith('image/') }, ai: { model: 'gemini-3-flash-preview' }, document: docMeta || {} })]
     );
-    await query('UPDATE ingest_jobs SET status = ?, transaction_id = ?, ai_output = ? WHERE id = ?', ['done', insTx.insertId, JSON.stringify({ type, amount, occurred_at, description, category_id }), jobId]);
+    await query('UPDATE ingest_jobs SET status = ?, transaction_id = ?, ai_output = ?, next_attempt_at = NULL WHERE id = ?', ['done', insTx.insertId, JSON.stringify({ type, amount, occurred_at, description, category_id }), jobId]);
   } catch (err) {
     try {
-      await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', String(err?.message || err || ''), jobId]);
+      const [job] = await query('SELECT attempts, max_attempts FROM ingest_jobs WHERE id = ?', [jobId]);
+      const attempts = Number(job?.attempts || 0);
+      const maxAttempts = Number(job?.max_attempts || config.ingest?.maxAttempts || 5);
+      const willRetry = !Number.isFinite(maxAttempts) || attempts < maxAttempts;
+      if (willRetry) {
+        const nextSec = Math.min((config.ingest?.retryBaseSeconds || 30) * Math.pow(2, Math.max(0, attempts - 1)), config.ingest?.retryMaxSeconds || 3600);
+        await query('UPDATE ingest_jobs SET status = ?, error = ?, next_attempt_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ?', ['queued', String(err?.message || err || ''), nextSec, jobId]);
+      } else {
+        await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', String(err?.message || err || ''), jobId]);
+      }
     } catch {}
   }
 }
