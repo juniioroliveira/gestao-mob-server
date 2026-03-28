@@ -42,9 +42,22 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     const isAsync = String(req.query.async || (req.body ? req.body.async : '') || '') === '1';
     const autoCreate = String(req.query.create || (req.body ? req.body.create : '') || '') === '1';
     if (isAsync && autoCreate && userId) {
-      res.status(202).json({ queued: 1 });
+      let jobId = null;
+      try {
+        const ins = await query(
+          'INSERT INTO ingest_jobs (user_id, status, mime_type, filename, data_base64) VALUES (?, ?, ?, ?, ?)',
+          [userId, 'queued', mimeType || null, req.file?.originalname || null, String(data)]
+        );
+        jobId = ins.insertId;
+      } catch {}
+      res.status(202).json({ queued: 1, job_id: jobId });
       setImmediate(async () => {
         try {
+          if (jobId) {
+            try {
+              await query('UPDATE ingest_jobs SET status = ? WHERE id = ?', ['processing', jobId]);
+            } catch {}
+          }
           let categories = [];
           try {
             categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
@@ -109,6 +122,9 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
           try {
             parsed = JSON.parse(text);
           } catch {
+            if (jobId) {
+              await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', 'invalid_ai_json', jobId]);
+            }
             return;
           }
           const amount = Number(parsed?.amount);
@@ -192,7 +208,14 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
             return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
           })();
           const occurred_at_sql = occurred_at || nowSql;
-          await query(
+          const requiredOk = type && Number.isFinite(amount) && description && String(description).length > 0;
+          if (!requiredOk) {
+            if (jobId) {
+              await query('UPDATE ingest_jobs SET status = ?, ai_output = ? WHERE id = ?', ['needs_review', JSON.stringify({ type, amount, occurred_at, description, category_id, metadata }), jobId]);
+            }
+            return;
+          }
+          const insTx = await query(
             'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
               userId,
@@ -206,15 +229,21 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
               JSON.stringify(metadata || {}),
             ]
           );
+          if (jobId) {
+            await query('UPDATE ingest_jobs SET status = ?, transaction_id = ?, ai_output = ? WHERE id = ?', ['done', insTx.insertId, JSON.stringify({ type, amount, occurred_at, description, category_id, metadata }), jobId]);
+          }
         } catch (err) {
           // swallow errors in background
-          console.error('Background AI ingest failed', err?.message || err);
+          try {
+            if (jobId) {
+              await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', String(err?.message || err || ''), jobId]);
+            }
+          } catch {}
         }
       });
       return;
     }
     let categories = [];
-    if (userId) {
     if (userId) {
       try {
         categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
@@ -432,7 +461,6 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       ai: { model: 'gemini-3-flash-preview' },
     };
     const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal: inscricao_federal_out, metadata };
-    const autoCreate = String(req.query.create || '').toLowerCase() === '1' || (!!req.body && !!req.body.create);
     if (autoCreate && userId) {
       const nowSql = (() => {
         const d = new Date();

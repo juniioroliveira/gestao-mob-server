@@ -9,6 +9,7 @@ import auth from './auth.js';
 import ai from './ai.js';
 import recurrings from './recurrings.js';
 import family from './family.js';
+import ingestJobs from './ingest_jobs.js';
 import { ensureAuth, optionalAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -23,5 +24,6 @@ router.use(summary);
 router.use(ai);
 router.use(recurrings);
 router.use(family);
+router.use(ingestJobs);
 
 export default router;
