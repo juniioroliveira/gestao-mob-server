@@ -380,6 +380,32 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       if (digits.length === 14 || digits.length === 11) return digits;
       return '';
     }
+    function normalizeText(s) {
+      return String(s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+    }
+    function heuristicCategoryIdByDescription(desc, catList) {
+      const d = normalizeText(desc);
+      const pickByName = (name) => {
+        const target = normalizeText(name);
+        const m = catList.find((c) => normalizeText(c.name) === target);
+        return m ? Number(m.id) : null;
+      };
+      if (/estacion/.test(d) || /garag/.test(d) || /parking/.test(d)) return pickByName('Essencial Fixo');
+      if (/internet/.test(d) || /plano/.test(d) || /celular/.test(d)) return pickByName('Essencial Fixo');
+      if (/aluguel/.test(d) || /\bagua\b/.test(d) || /\bluz\b/.test(d)) return pickByName('Essencial Fixo');
+      if (/mercado/.test(d) || /supermerc/.test(d) || /carrefour|extra|assai|atacad/.test(d)) return pickByName('Essencial Variável');
+      if (/farmac/.test(d) || /droga|drogasil|panvel|pacheco|raia/.test(d)) return pickByName('Essencial Variável');
+      if (/combustivel|gasolina|etanol|diesel|posto/.test(d)) return pickByName('Essencial Variável');
+      if (/restaurante|lanchonete|burger|pizza|sushi|cafeteria/.test(d)) return pickByName('Não Essencial (Lazer)');
+      if (/streaming|netflix|spotify|prime|youtube|disney|apple/.test(d)) return pickByName('Não Essencial (Lazer)');
+      if (/compra|eletron|roupa|viagem|lazer/.test(d)) return pickByName('Não Essencial (Lazer)');
+      if (/acoes|fundos|renda fixa|cripto|previd/.test(d)) return pickByName('Investimentos');
+      if (/emergenc|fundo|reserva|objetivos/.test(d)) return pickByName('Reserva');
+      return null;
+    }
     function toNatureLabel(s) {
       const v = String(s || '').toLowerCase();
       if (/\bestac/i.test(v) || /\bparking\b/.test(v)) return 'Estacionamento';
@@ -420,6 +446,12 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     const docMeta = parsed?.metadata || {};
     const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
     const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
+      if (!category_id) {
+        category_id = heuristicCategoryIdByDescription(description, catList) || null;
+      }
+    if (!category_id) {
+      category_id = heuristicCategoryIdByDescription(description, catList) || null;
+    }
     // Heuristic: map account_id for liabilities if description suggests "fatura/cartão"
     let account_id = null;
     if (userId) {
