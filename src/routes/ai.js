@@ -58,7 +58,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
                 "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil), " +
-                'description (nome amigável do serviço/estabelecimento, evitando razão social e sufixos como LTDA, EIRELI, CNPJ), ' +
+                'description (um título curto que descreve a NATUREZA do gasto/recebimento, como Estacionamento, Combustível, Supermercado, Restaurante, Padaria, Farmácia, Pedágio, Transporte por aplicativo, Assinatura, Mensalidade, Eletrônicos; evitar razão social e sufixos como LTDA, EIRELI, CNPJ), ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
                 'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
                 'Nunca inclua valores formatados com R$, apenas número em amount. ' +
@@ -122,7 +122,24 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         .replace(/\s{2,}/g, ' ')
         .trim();
     }
-    const description = cleanDescription(parsed?.description);
+    function toNatureLabel(s) {
+      const v = String(s || '').toLowerCase();
+      if (/\bestac/i.test(v) || /\bparking\b/.test(v)) return 'Estacionamento';
+      if (/\bipiranga\b/.test(v) || /\bshell\b/.test(v) || /\bpetrobras\b/.test(v) || /\bposto\b/.test(v) || /\bdiesel\b/.test(v) || /\bgasolina\b/.test(v) || /\betanol\b/.test(v)) return 'Combustível';
+      if (/\bsupermercado\b/.test(v) || /\bmercado\b/.test(v) || /\bcarrefour\b/.test(v) || /\bextra\b/.test(v) || /\bassai\b/.test(v) || /\batacad[aã]o\b/.test(v) || /\bp[aã]o de a[cç]ucar\b/.test(v)) return 'Supermercado';
+      if (/\bfarm[aá]cia\b/.test(v) || /\bdroga/i.test(v) || /\bdrogasil\b/.test(v) || /\bpanvel\b/.test(v) || /\bpacheco\b/.test(v) || /\braia\b/.test(v)) return 'Farmácia';
+      if (/\bpadaria\b/.test(v)) return 'Padaria';
+      if (/\brestaurante\b/.test(v) || /\blanchonete\b/.test(v) || /\bburger\b/.test(v) || /\bpizza\b/.test(v) || /\bsushi\b/.test(v) || /\bcafeteria\b/.test(v) || /\bcaf[eé]\b/.test(v)) return 'Restaurante';
+      if (/\bped[aá]gio\b/.test(v) || /\bsem parar\b/.test(v) || /\bconcession[aá]ria\b/.test(v)) return 'Pedágio';
+      if (/\buber\b/.test(v) || /\b99\b/.test(v) || /\bcabify\b/.test(v) || /\bindrive\b/.test(v)) return 'Transporte por aplicativo';
+      if (/\bmensalidade\b/.test(v) || /\bmensal\b/.test(v) || /\bacademia\b/.test(v)) return 'Mensalidade';
+      if (/\bassinatura\b/.test(v) || /\bsubscription\b/.test(v) || /\bspotify\b/.test(v) || /\bnetflix\b/.test(v) || /\bprime\b/.test(v) || /\blicloud\b/.test(v) || /\bgoogle one\b/.test(v) || /\byoutube premium\b/.test(v)) return 'Assinatura';
+      if (/\beletr[oô]nicos?\b/.test(v) || /\bsmartphone\b/.test(v) || /\bnotebook\b/.test(v) || /\biphone\b/.test(v)) return 'Eletrônicos';
+      return null;
+    }
+    let description = cleanDescription(parsed?.description);
+    const nature = toNatureLabel(description);
+    if (nature) description = nature;
     const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
     let category_id = null;
     if (Array.isArray(categories) && categories.length) {
