@@ -60,7 +60,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     }
     let categories = [];
     if (userId) {
-      try {
+      try { 
         categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
       } catch {}
     }
