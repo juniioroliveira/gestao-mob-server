@@ -284,9 +284,9 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
             },
             {
               text:
-                'Categorias do usuário com IDs e subcategorias/sinônimos: ' +
+                'Categorias do usuário com IDs e subcategorias/sinônimos (EXEMPLOS, não regras rígidas): ' +
                 JSON.stringify(catList) +
-                '. Escolha o category_id que melhor representa a transação, considerando os sinônimos e subcategorias fornecidas.',
+                '. Use as subcategorias apenas como referência para aprendizado; se não houver correspondência clara, escolha a categoria que melhor representa a transação. Persistindo dúvida, deixe category_id vazio e inclua category_name.',
             },
             { inlineData: { data, mimeType } },
           ],
