@@ -81,7 +81,44 @@ router.post('/ingest-jobs/:id/approve', async (req, res, next) => {
     const payload = req.body || {};
     const type = payload.type || job.ai_output?.type;
     const amount = Number(payload.amount ?? job.ai_output?.amount);
-    const occurred_at = payload.occurred_at || job.ai_output?.occurred_at || new Date().toISOString().slice(0, 19).replace('T', ' ');
+    function toSqlDatetime(s) {
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
+      return null;
+    }
+    function parseBrDatetime(s) {
+      const v = String(s || '').trim();
+      const m = v.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+      if (m) {
+        const dd = Number(m[1]); const MM = Number(m[2]); const yyyy = Number(m[3]);
+        const hh = Number(m[4] || 0); const mi = Number(m[5] || 0); const ss = Number(m[6] || 0);
+        const d = new Date(yyyy, MM - 1, dd, hh, mi, ss);
+        return toSqlDatetime(d);
+      }
+      return toSqlDatetime(v);
+    }
+    const docMeta = (job.ai_output && job.ai_output.metadata) || {};
+    const candidates = [
+      payload.occurred_at,
+      job.ai_output?.occurred_at,
+      docMeta?.occurred_at_original,
+      docMeta?.due_date,
+      docMeta?.vencimento,
+      docMeta?.due,
+    ];
+    let occurred_at = null;
+    for (const c of candidates) {
+      const dt = parseBrDatetime(c);
+      if (dt) { occurred_at = dt; break; }
+    }
+    if (!occurred_at) {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      occurred_at = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    }
     const description = payload.description || job.ai_output?.description;
     const category_id = payload.category_id ?? job.ai_output?.category_id ?? null;
     const inscricao_federal = payload.inscricao_federal ?? job.ai_output?.inscricao_federal ?? null;

@@ -168,7 +168,6 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     }
     // Normalize amount
     const amount = Number(parsed?.amount);
-    // Normalize occurred_at to 'YYYY-MM-DD HH:mm:ss' or null when not found
     function toSqlDatetime(s) {
       const tryDate = new Date(s);
       if (!isNaN(tryDate.getTime())) {
@@ -183,7 +182,36 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       }
       return null;
     }
-    const occurred_at = parsed?.occurred_at == null ? null : toSqlDatetime(parsed?.occurred_at);
+    function parseBrDatetime(s) {
+      const v = String(s || '').trim();
+      const m = v.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+      if (m) {
+        const dd = Number(m[1]);
+        const MM = Number(m[2]);
+        const yyyy = Number(m[3]);
+        const hh = Number(m[4] || 0);
+        const mi = Number(m[5] || 0);
+        const ss = Number(m[6] || 0);
+        const d = new Date(yyyy, MM - 1, dd, hh, mi, ss);
+        return toSqlDatetime(d);
+      }
+      return toSqlDatetime(v);
+    }
+    const occurred_at_candidates_sync = [
+      parsed?.occurred_at,
+      docMeta?.occurred_at_original,
+      docMeta?.due_date,
+      docMeta?.vencimento,
+      docMeta?.due,
+    ];
+    let occurred_at = null;
+    for (const c of occurred_at_candidates_sync) {
+      const dt = parseBrDatetime(c);
+      if (dt) {
+        occurred_at = dt;
+        break;
+      }
+    }
     function cleanDescription(s) {
       return String(s || '')
         .replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '')
@@ -493,8 +521,8 @@ export async function processIngestJobById(jobId) {
       await query('UPDATE ingest_jobs SET status = ?, error = ?, next_attempt_at = DATE_ADD(NOW(), INTERVAL ? SECOND) WHERE id = ?', ['queued', 'invalid_ai_json', nextSec, jobId]);
       return;
     }
-    const amount = Number(parsed?.amount);
-    function toSqlDatetime(s) {
+          const amount = Number(parsed?.amount);
+          function toSqlDatetime(s) {
       const tryDate = new Date(s);
       if (!isNaN(tryDate.getTime())) {
         const pad = (n) => String(n).padStart(2, '0');
@@ -508,6 +536,21 @@ export async function processIngestJobById(jobId) {
       }
       return null;
     }
+          function parseBrDatetime(s) {
+            const v = String(s || '').trim();
+            const m = v.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+            if (m) {
+              const dd = Number(m[1]);
+              const MM = Number(m[2]);
+              const yyyy = Number(m[3]);
+              const hh = Number(m[4] || 0);
+              const mi = Number(m[5] || 0);
+              const ss = Number(m[6] || 0);
+              const d = new Date(yyyy, MM - 1, dd, hh, mi, ss);
+              return toSqlDatetime(d);
+            }
+            return toSqlDatetime(v);
+          }
     function cleanDescription(s) {
       return String(s || '').replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
     }
@@ -572,8 +615,22 @@ export async function processIngestJobById(jobId) {
         category_id = match ? Number(match.id) : null;
       }
     }
-    const occurred_at = parsed?.occurred_at == null ? null : toSqlDatetime(parsed?.occurred_at);
-    const docMeta = parsed?.metadata || {};
+          const docMeta = parsed?.metadata || {};
+          const occurred_at_candidates = [
+            parsed?.occurred_at,
+            docMeta?.occurred_at_original,
+            docMeta?.due_date,
+            docMeta?.vencimento,
+            docMeta?.due,
+          ];
+          let occurred_at = null;
+          for (const c of occurred_at_candidates) {
+            const dt = parseBrDatetime(c);
+            if (dt) {
+              occurred_at = dt;
+              break;
+            }
+          }
     const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
     const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
     const issuer_name_norm2 = canonicalIssuerName(docMeta?.issuer_name || null, description);
