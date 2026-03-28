@@ -50,7 +50,7 @@ router.post('/transactions', async (req, res, next) => {
     if (!uid || !type || amount == null || !occurred_at) return res.status(400).json({ error: 'invalid_body' });
     const result = await query(
       'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [uid, account_id || null, category_id || null, type, amount, occurred_at, description || null, inscricao_federal || null, metadata ? JSON.stringify(metadata) : null]
+      [uid, account_id || null, category_id || null, type, amount, occurred_at, description || null, (inscricao_federal ?? null), metadata ? JSON.stringify(metadata) : null]
     );
     const [row] = await query('SELECT id, user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata, created_at FROM transactions WHERE id = ?', [result.insertId]);
     res.status(201).json(row);
@@ -65,7 +65,7 @@ router.put('/transactions/:id', async (req, res, next) => {
     const { account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata } = req.body || {};
     await query(
       'UPDATE transactions SET account_id = COALESCE(?, account_id), category_id = COALESCE(?, category_id), type = COALESCE(?, type), amount = COALESCE(?, amount), occurred_at = COALESCE(?, occurred_at), description = COALESCE(?, description), inscricao_federal = COALESCE(?, inscricao_federal), metadata = COALESCE(?, metadata) WHERE id = ?',
-      [account_id ?? null, category_id ?? null, type || null, amount ?? null, occurred_at || null, description || null, inscricao_federal || null, metadata ? JSON.stringify(metadata) : null, id]
+      [account_id ?? null, category_id ?? null, type || null, amount ?? null, occurred_at || null, description || null, (inscricao_federal ?? null), metadata ? JSON.stringify(metadata) : null, id]
     );
     const [row] = await query('SELECT id, user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata, created_at FROM transactions WHERE id = ?', [id]);
     if (!row) return res.status(404).json({ error: 'not_found' });

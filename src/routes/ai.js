@@ -63,7 +63,10 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'category_id (um ID escolhido da lista fornecida). ' +
                 'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
                 'Nunca inclua valores formatados com R$, apenas número em amount. ' +
-                'A saída deve ser somente JSON sem comentários.',
+                'A saída deve ser somente JSON sem comentários. ' +
+                'Inclua também um campo metadata com os dados do DOCUMENTO contendo: ' +
+                'issuer_name (nome do emissor), issuer_federal_id (CNPJ ou CPF), document_type (cupom, nota, recibo, etc.), document_number, series, payment_method, currency (ex.: BRL), occurred_at_original (data/hora como no documento), ' +
+                'items (lista de itens com description, quantity, unit_price, total) e totals (subtotal, discount, tax, total).',
             },
             {
               text:
@@ -86,8 +89,42 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
             inscricao_federal: { type: Type.STRING },
             description: { type: Type.STRING },
             category_id: { type: Type.NUMBER },
+            metadata: {
+              type: Type.OBJECT,
+              properties: {
+                issuer_name: { type: Type.STRING },
+                issuer_federal_id: { type: Type.STRING },
+                document_type: { type: Type.STRING },
+                document_number: { type: Type.STRING },
+                series: { type: Type.STRING },
+                payment_method: { type: Type.STRING },
+                currency: { type: Type.STRING },
+                occurred_at_original: { type: Type.STRING },
+                items: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      description: { type: Type.STRING },
+                      quantity: { type: Type.NUMBER },
+                      unit_price: { type: Type.NUMBER },
+                      total: { type: Type.NUMBER },
+                    },
+                  },
+                },
+                totals: {
+                  type: Type.OBJECT,
+                  properties: {
+                    subtotal: { type: Type.NUMBER },
+                    discount: { type: Type.NUMBER },
+                    tax: { type: Type.NUMBER },
+                    total: { type: Type.NUMBER },
+                  },
+                },
+              },
+            },
           },
-          required: ['type', 'amount', 'description'],
+          required: ['type', 'amount', 'description', 'metadata'],
         },
       },
     });
@@ -162,7 +199,9 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       const cid = Number(parsed?.category_id);
       category_id = Number.isFinite(cid) ? cid : null;
     }
-    const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal);
+    const docMeta = parsed?.metadata || {};
+    const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
+    const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
     // Heuristic: map account_id for liabilities if description suggests "fatura/cartão"
     let account_id = null;
     if (userId) {
@@ -177,12 +216,33 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     }
     const metadata = {
       source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
-      document: { occurred_at_original: parsed?.occurred_at ?? null, federal_id: inscricao_federal || null },
-      classification: { category_id, category_name: parsed?.category_name ?? null, type },
-      totals: { amount: Number.isFinite(amount) ? amount : 0 },
+      document: {
+        issuer_name: docMeta?.issuer_name ?? null,
+        issuer_federal_id: normalizeFederalId(docMeta?.issuer_federal_id) || null,
+        document_type: docMeta?.document_type ?? null,
+        document_number: docMeta?.document_number ?? null,
+        series: docMeta?.series ?? null,
+        occurred_at_original: docMeta?.occurred_at_original ?? (parsed?.occurred_at ?? null),
+        payment_method: docMeta?.payment_method ?? null,
+        currency: docMeta?.currency ?? 'BRL',
+      },
+      items: Array.isArray(docMeta?.items)
+        ? docMeta.items.map((i) => ({
+            description: String(i?.description || ''),
+            quantity: Number(i?.quantity || 0),
+            unit_price: Number(i?.unit_price || 0),
+            total: Number(i?.total ?? (Number(i?.quantity || 0) * Number(i?.unit_price || 0))),
+          }))
+        : [],
+      totals: {
+        subtotal: Number(docMeta?.totals?.subtotal ?? 0),
+        discount: Number(docMeta?.totals?.discount ?? 0),
+        tax: Number(docMeta?.totals?.tax ?? 0),
+        total: Number.isFinite(amount) ? amount : Number(docMeta?.totals?.total ?? 0),
+      },
       ai: { model: 'gemini-3-flash-preview' },
     };
-    const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal, metadata };
+    const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal: inscricao_federal_out, metadata };
     return res.json(result);
   } catch (e) {
     const msg = e?.message || '';
