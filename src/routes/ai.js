@@ -53,206 +53,8 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       res.status(202).json({ queued: 1, job_id: jobId });
       setImmediate(async () => {
         try {
-          if (jobId) {
-            try {
-              await query('UPDATE ingest_jobs SET status = ? WHERE id = ?', ['processing', jobId]);
-            } catch {}
-          }
-          let categories = [];
-          try {
-            categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
-          } catch {}
-          const catList = Array.isArray(categories)
-            ? categories.map((c) => {
-                let subs = [];
-                try {
-                  const raw = typeof c.subcategories === 'string' ? JSON.parse(c.subcategories) : c.subcategories;
-                  subs = Array.isArray(raw) ? raw.map((s) => String(s)) : [];
-                } catch {}
-                return { id: Number(c.id), name: String(c.name), subcategories: subs };
-              })
-            : [];
-          const ai = new GoogleGenAI({ apiKey });
-          const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: [
-              {
-                parts: [
-                  {
-                    text:
-                      'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
-                      'type (income|expense|transfer), ' +
-                      'amount (número decimal com ponto, ex: 54.52), ' +
-                      "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
-                      'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
-                      'description (um título curto que descreve a NATUREZA do gasto/recebimento), ' +
-                      'category_id (um ID escolhido da lista fornecida). ' +
-                      'Inclua também um campo metadata com os dados do DOCUMENTO contendo: issuer_name, issuer_federal_id, document_type, document_number, series, payment_method, currency, occurred_at_original, items e totals.',
-                  },
-                  {
-                    text:
-                      'Categorias do usuário com IDs e subcategorias/sinônimos: ' +
-                      JSON.stringify(catList) +
-                      '. Escolha o category_id que melhor representa a transação, considerando os sinônimos e subcategorias fornecidas.',
-                  },
-                  { inlineData: { data, mimeType } },
-                ],
-              },
-            ],
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  type: { type: Type.STRING, enum: ['income', 'expense', 'transfer'] },
-                  amount: { type: Type.NUMBER },
-                  occurred_at: { type: Type.STRING },
-                  inscricao_federal: { type: Type.STRING },
-                  description: { type: Type.STRING },
-                  category_id: { type: Type.NUMBER },
-                  metadata: { type: Type.OBJECT },
-                },
-                required: ['type', 'amount', 'description', 'metadata'],
-              },
-            },
-          });
-          const text = response?.text;
-          if (!text) return;
-          let parsed;
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            if (jobId) {
-              await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', 'invalid_ai_json', jobId]);
-            }
-            return;
-          }
-          const amount = Number(parsed?.amount);
-          function toSqlDatetime(s) {
-            const tryDate = new Date(s);
-            if (!isNaN(tryDate.getTime())) {
-              const pad = (n) => String(n).padStart(2, '0');
-              const yyyy = tryDate.getFullYear();
-              const MM = pad(tryDate.getMonth() + 1);
-              const dd = pad(tryDate.getDate());
-              const hh = pad(tryDate.getHours());
-              const mm = pad(tryDate.getMinutes());
-              const ss = pad(tryDate.getSeconds());
-              return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}`;
-            }
-            return null;
-          }
-          function cleanDescription(s) {
-            return String(s || '')
-              .replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '')
-              .replace(/\s{2,}/g, ' ')
-              .trim();
-          }
-          function normalizeFederalId(s) {
-            const digits = String(s || '').replace(/[^\d]/g, '');
-            if (digits.length === 14 || digits.length === 11) return digits;
-            return '';
-          }
-          let description = cleanDescription(parsed?.description);
-          const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
-          let category_id = null;
-          if (Array.isArray(catList) && catList.length) {
-            const cid = Number(parsed?.category_id);
-            if (Number.isFinite(cid) && catList.some((c) => Number(c.id) === cid)) {
-              category_id = cid;
-            } else {
-              const cname = String(parsed?.category_name || '').toLowerCase();
-              const match = catList.find((c) => {
-                if (String(c.name).toLowerCase() === cname) return true;
-                const subs = Array.isArray(c.subcategories) ? c.subcategories : [];
-                return subs.some((s) => String(s).toLowerCase() === cname);
-              });
-              category_id = match ? Number(match.id) : null;
-            }
-          }
-          const occurred_at = parsed?.occurred_at == null ? null : toSqlDatetime(parsed?.occurred_at);
-          const docMeta = parsed?.metadata || {};
-          const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
-          const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
-    const issuer_name_norm2 = canonicalIssuerName(docMeta?.issuer_name || null, description);
-    const doc_type_norm2 = canonicalDocType(description, issuer_name_norm2) || docMeta?.document_type || null;
-    description = canonicalTitle(doc_type_norm2, issuer_name_norm2, description);
-          if (!category_id && userId) {
-            try {
-              const hist = await query(
-                'SELECT category_id FROM transactions WHERE user_id = ? AND description = ? AND category_id IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1',
-                [userId, description]
-              );
-              const hid = Number(hist?.[0]?.category_id || 0);
-              if (Number.isFinite(hid) && hid > 0) category_id = hid;
-            } catch {}
-          }
-    const metadata = {
-            source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
-            document: {
-        issuer_name: issuer_name_norm2 ?? docMeta?.issuer_name ?? null,
-              issuer_federal_id: normalizeFederalId(docMeta?.issuer_federal_id) || null,
-        document_type: doc_type_norm2 ?? null,
-              document_number: docMeta?.document_number ?? null,
-              series: docMeta?.series ?? null,
-              occurred_at_original: docMeta?.occurred_at_original ?? (parsed?.occurred_at ?? null),
-              payment_method: docMeta?.payment_method ?? null,
-              currency: docMeta?.currency ?? 'BRL',
-            },
-            items: Array.isArray(docMeta?.items)
-              ? docMeta.items.map((i) => ({
-                  description: String(i?.description || ''),
-                  quantity: Number(i?.quantity || 0),
-                  unit_price: Number(i?.unit_price || 0),
-                  total: Number(i?.total ?? (Number(i?.quantity || 0) * Number(i?.unit_price || 0))),
-                }))
-              : [],
-            totals: {
-              subtotal: Number(docMeta?.totals?.subtotal ?? 0),
-              discount: Number(docMeta?.totals?.discount ?? 0),
-              tax: Number(docMeta?.totals?.tax ?? 0),
-              total: Number.isFinite(amount) ? amount : Number(docMeta?.totals?.total ?? 0),
-            },
-            ai: { model: 'gemini-3-flash-preview' },
-          };
-          const nowSql = (() => {
-            const d = new Date();
-            const pad = (n) => String(n).padStart(2, '0');
-            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-          })();
-          const occurred_at_sql = occurred_at || nowSql;
-          const requiredOk = type && Number.isFinite(amount) && description && String(description).length > 0;
-          if (!requiredOk) {
-            if (jobId) {
-              await query('UPDATE ingest_jobs SET status = ?, ai_output = ? WHERE id = ?', ['needs_review', JSON.stringify({ type, amount, occurred_at, description, category_id, metadata }), jobId]);
-            }
-            return;
-          }
-          const insTx = await query(
-            'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-              userId,
-              null,
-              category_id || null,
-              type,
-              Number.isFinite(amount) ? amount : 0,
-              occurred_at_sql,
-              description || null,
-              inscricao_federal_out || null,
-              JSON.stringify(metadata || {}),
-            ]
-          );
-          if (jobId) {
-            await query('UPDATE ingest_jobs SET status = ?, transaction_id = ?, ai_output = ? WHERE id = ?', ['done', insTx.insertId, JSON.stringify({ type, amount, occurred_at, description, category_id, metadata }), jobId]);
-          }
-        } catch (err) {
-          // swallow errors in background
-          try {
-            if (jobId) {
-              await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', String(err?.message || err || ''), jobId]);
-            }
-          } catch {}
-        }
+          if (jobId) await processIngestJobById(jobId);
+        } catch {}
       });
       return;
     }
@@ -603,3 +405,198 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
 });
 
 export default router;
+export async function processIngestJobById(jobId) {
+  try {
+    const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey) return;
+    const [job] = await query('SELECT * FROM ingest_jobs WHERE id = ?', [jobId]);
+    if (!job) return;
+    const userId = Number(job.user_id);
+    const data = String(job.data_base64 || '');
+    const mimeType = String(job.mime_type || '');
+    await query('UPDATE ingest_jobs SET status = ? WHERE id = ?', ['processing', jobId]);
+    let categories = [];
+    try {
+      categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
+    } catch {}
+    const catList = Array.isArray(categories)
+      ? categories.map((c) => {
+          let subs = [];
+          try {
+            const raw = typeof c.subcategories === 'string' ? JSON.parse(c.subcategories) : c.subcategories;
+            subs = Array.isArray(raw) ? raw.map((s) => String(s)) : [];
+          } catch {}
+          return { id: Number(c.id), name: String(c.name), subcategories: subs };
+        })
+      : [];
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: [
+        {
+          parts: [
+            {
+              text:
+                'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
+                'type (income|expense|transfer), ' +
+                'amount (número decimal com ponto, ex: 54.52), ' +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
+                'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
+                'description (um título curto que descreve a NATUREZA do gasto/recebimento), ' +
+                'category_id (um ID escolhido da lista fornecida). ' +
+                'Inclua também um campo metadata com os dados do DOCUMENTO contendo: issuer_name, issuer_federal_id, document_type, document_number, series, payment_method, currency, occurred_at_original, items e totals.',
+            },
+            {
+              text:
+                'Categorias do usuário com IDs e subcategorias/sinônimos: ' +
+                JSON.stringify(catList) +
+                '. Escolha o category_id que melhor representa a transação, considerando os sinônimos e subcategorias fornecidas.',
+            },
+            { inlineData: { data, mimeType } },
+          ],
+        },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            type: { type: Type.STRING, enum: ['income', 'expense', 'transfer'] },
+            amount: { type: Type.NUMBER },
+            occurred_at: { type: Type.STRING },
+            inscricao_federal: { type: Type.STRING },
+            description: { type: Type.STRING },
+            category_id: { type: Type.NUMBER },
+            metadata: { type: Type.OBJECT },
+          },
+          required: ['type', 'amount', 'description', 'metadata'],
+        },
+      },
+    });
+    const text = response?.text;
+    if (!text) {
+      await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', 'empty_ai_response', jobId]);
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', 'invalid_ai_json', jobId]);
+      return;
+    }
+    const amount = Number(parsed?.amount);
+    function toSqlDatetime(s) {
+      const tryDate = new Date(s);
+      if (!isNaN(tryDate.getTime())) {
+        const pad = (n) => String(n).padStart(2, '0');
+        const yyyy = tryDate.getFullYear();
+        const MM = pad(tryDate.getMonth() + 1);
+        const dd = pad(tryDate.getDate());
+        const hh = pad(tryDate.getHours());
+        const mm = pad(tryDate.getMinutes());
+        const ss = pad(tryDate.getSeconds());
+        return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}`;
+      }
+      return null;
+    }
+    function cleanDescription(s) {
+      return String(s || '').replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+    }
+    function normalizeFederalId(s) {
+      const digits = String(s || '').replace(/[^\d]/g, '');
+      if (digits.length === 14 || digits.length === 11) return digits;
+      return '';
+    }
+    function normalizeText(s) {
+      return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    }
+    function canonicalIssuerName(name, desc) {
+      const n = normalizeText(name) || normalizeText(desc);
+      if (/enel|eletropaulo|elektro|cpfl|light|equatorial|celesc|cemig/.test(n)) return 'Enel';
+      if (/sabesp|sanepar|copasa|compesa|cagece|saneago/.test(n)) return 'Sabesp';
+      if (/\bvivo\b|telefonica/.test(n)) return 'Vivo';
+      if (/\bclaro\b|net\b/.test(n)) return 'Claro';
+      if (/\btim\b/.test(n)) return 'TIM';
+      if (/\boi\b/.test(n)) return 'Oi';
+      if (/sem\s*parar/.test(n)) return 'Sem Parar';
+      return name || null;
+    }
+    function canonicalDocType(desc, issuer) {
+      const d = normalizeText(desc + ' ' + (issuer || ''));
+      if (/luz|energia|eletric/.test(d)) return 'Conta de Luz';
+      if (/\bagua\b|sanepar|sabesp/.test(d)) return 'Conta de Água';
+      if (/internet|fibra|banda larga|net|claro|vivo|oi fibra/.test(d)) return 'Conta de Internet';
+      if (/plano|celular|telefonia/.test(d)) return 'Conta de Celular';
+      if (/fatura.*cart[aã]o|cart[aã]o.*fatura/.test(d)) return 'Fatura de Cartão';
+      if (/estacion|parking/.test(d)) return 'Cupom de Estacionamento';
+      if (/ped[aá]gio|sem\s*parar/.test(d)) return 'Pedágio';
+      if (/supermerc|mercado/.test(d)) return 'Supermercado - Nota';
+      if (/farm[aá]cia|droga|drogasil|raia|panvel|pacheco/.test(d)) return 'Farmácia - Nota';
+      if (/nota\s*fiscal|nfe|nf-e/.test(d)) return 'Nota Fiscal';
+      if (/boleto|linha\s*digit[aá]vel/.test(d)) return 'Boleto';
+      if (/recibo/.test(d)) return 'Recibo';
+      return null;
+    }
+    function canonicalTitle(docType, issuer, desc) {
+      const base = String(desc || '').trim();
+      const dt = String(docType || '').trim();
+      const isr = String(issuer || '').trim();
+      if (dt && isr) return `${dt} - ${isr}`;
+      if (dt) return dt;
+      if (isr && base && !base.toLowerCase().includes(isr.toLowerCase())) return `${base} - ${isr}`;
+      return base || isr || '';
+    }
+    let description = cleanDescription(parsed?.description);
+    const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
+    let category_id = null;
+    if (Array.isArray(catList) && catList.length) {
+      const cid = Number(parsed?.category_id);
+      if (Number.isFinite(cid) && catList.some((c) => Number(c.id) === cid)) {
+        category_id = cid;
+      } else {
+        const cname = String(parsed?.category_name || '').toLowerCase();
+        const match = catList.find((c) => {
+          if (String(c.name).toLowerCase() === cname) return true;
+          const subs = Array.isArray(c.subcategories) ? c.subcategories : [];
+          return subs.some((s) => String(s).toLowerCase() === cname);
+        });
+        category_id = match ? Number(match.id) : null;
+      }
+    }
+    const occurred_at = parsed?.occurred_at == null ? null : toSqlDatetime(parsed?.occurred_at);
+    const docMeta = parsed?.metadata || {};
+    const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
+    const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
+    const issuer_name_norm2 = canonicalIssuerName(docMeta?.issuer_name || null, description);
+    const doc_type_norm2 = canonicalDocType(description, issuer_name_norm2) || docMeta?.document_type || null;
+    description = canonicalTitle(doc_type_norm2, issuer_name_norm2, description);
+    if (!category_id && userId) {
+      try {
+        const hist = await query('SELECT category_id FROM transactions WHERE user_id = ? AND description = ? AND category_id IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1', [userId, description]);
+        const hid = Number(hist?.[0]?.category_id || 0);
+        if (Number.isFinite(hid) && hid > 0) category_id = hid;
+      } catch {}
+    }
+    const nowSql = (() => {
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    })();
+    const occurred_at_sql = occurred_at || nowSql;
+    const requiredOk = type && Number.isFinite(amount) && description && String(description).length > 0;
+    if (!requiredOk) {
+      await query('UPDATE ingest_jobs SET status = ?, ai_output = ? WHERE id = ?', ['needs_review', JSON.stringify({ type, amount, occurred_at, description, category_id }), jobId]);
+      return;
+    }
+    const insTx = await query(
+      'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [userId, null, category_id || null, type, Number.isFinite(amount) ? amount : 0, occurred_at_sql, description || null, inscricao_federal_out || null, JSON.stringify({ source: { mimeType, isImage: String(mimeType || '').startsWith('image/') }, ai: { model: 'gemini-3-flash-preview' }, document: docMeta || {} })]
+    );
+    await query('UPDATE ingest_jobs SET status = ?, transaction_id = ?, ai_output = ? WHERE id = ?', ['done', insTx.insertId, JSON.stringify({ type, amount, occurred_at, description, category_id }), jobId]);
+  } catch (err) {
+    try {
+      await query('UPDATE ingest_jobs SET status = ?, error = ? WHERE id = ?', ['failed', String(err?.message || err || ''), jobId]);
+    } catch {}
+  }
+}

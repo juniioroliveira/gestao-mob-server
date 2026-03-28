@@ -4,6 +4,7 @@ import routes from './routes/index.js';
 import { config } from './config/env.js';
 import { ensureDemoUser } from './bootstrap/demo-user.js';
 import { query } from './db/query.js';
+import { processIngestJobById } from './routes/ai.js';
 
 const app = express();
 app.use(cors());
@@ -56,6 +57,39 @@ setInterval(async () => {
     );
   } catch {}
 }, 60 * 1000);
+setTimeout(async () => {
+  try {
+    await query("UPDATE ingest_jobs SET status = 'queued', error = COALESCE(error,'requeued_on_boot') WHERE status = 'processing'");
+  } catch {}
+  let pumping = false;
+  async function claimNext() {
+    try {
+      const rows = await query("SELECT id FROM ingest_jobs WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1");
+      const id = Number(rows?.[0]?.id || 0);
+      if (!id) return null;
+      const res = await query("UPDATE ingest_jobs SET status = 'processing', updated_at = NOW() WHERE id = ? AND status = 'queued'", [id]);
+      if (res?.affectedRows === 1) return id;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+  async function pump() {
+    if (pumping) return;
+    pumping = true;
+    try {
+      for (;;) {
+        const id = await claimNext();
+        if (!id) break;
+        await processIngestJobById(id);
+      }
+    } finally {
+      pumping = false;
+    }
+  }
+  await pump();
+  setInterval(pump, 3000);
+}, 0);
 app.use((err, req, res, next) => {
   const payload = {
     error: 'internal_error',
