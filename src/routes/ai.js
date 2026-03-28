@@ -42,9 +42,19 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     let categories = [];
     if (userId) {
       try {
-        categories = await query('SELECT id, name FROM categories WHERE user_id = ?', [userId]);
+        categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
       } catch {}
     }
+    const catList = Array.isArray(categories)
+      ? categories.map((c) => {
+          let subs = [];
+          try {
+            const raw = typeof c.subcategories === 'string' ? JSON.parse(c.subcategories) : c.subcategories;
+            subs = Array.isArray(raw) ? raw.map((s) => String(s)) : [];
+          } catch {}
+          return { id: Number(c.id), name: String(c.name), subcategories: subs };
+        })
+      : [];
 
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
@@ -70,9 +80,9 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
             },
             {
               text:
-                'Categorias disponíveis do usuário com seus IDs: ' +
-                JSON.stringify(categories.map((c) => ({ id: Number(c.id), name: String(c.name) }))) +
-                '. Escolha o category_id que melhor representa a transação.',
+                'Categorias do usuário com IDs e subcategorias/sinônimos: ' +
+                JSON.stringify(catList) +
+                '. Escolha o category_id que melhor representa a transação, considerando os sinônimos e subcategorias fornecidas.',
             },
             { inlineData: { data, mimeType } },
           ],
@@ -186,13 +196,17 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     if (nature) description = nature;
     const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
     let category_id = null;
-    if (Array.isArray(categories) && categories.length) {
+    if (Array.isArray(catList) && catList.length) {
       const cid = Number(parsed?.category_id);
-      if (Number.isFinite(cid) && categories.some((c) => Number(c.id) === cid)) {
+      if (Number.isFinite(cid) && catList.some((c) => Number(c.id) === cid)) {
         category_id = cid;
       } else {
         const cname = String(parsed?.category_name || '').toLowerCase();
-        const match = categories.find((c) => String(c.name).toLowerCase() === cname);
+        const match = catList.find((c) => {
+          if (String(c.name).toLowerCase() === cname) return true;
+          const subs = Array.isArray(c.subcategories) ? c.subcategories : [];
+          return subs.some((s) => String(s).toLowerCase() === cname);
+        });
         category_id = match ? Number(match.id) : null;
       }
     } else {
@@ -243,6 +257,35 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       ai: { model: 'gemini-3-flash-preview' },
     };
     const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal: inscricao_federal_out, metadata };
+    const autoCreate = String(req.query.create || '').toLowerCase() === '1' || (!!req.body && !!req.body.create);
+    if (autoCreate && userId) {
+      const nowSql = (() => {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      })();
+      const occurred_at_sql = occurred_at || nowSql;
+      try {
+        const insert = await query(
+          'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            userId,
+            account_id || null,
+            category_id || null,
+            result.type,
+            result.amount,
+            occurred_at_sql,
+            result.description || null,
+            result.inscricao_federal || null,
+            JSON.stringify(result.metadata || {}),
+          ]
+        );
+        const [row] = await query('SELECT id, user_id, account_id, category_id, member_id, type, amount, occurred_at, description, inscricao_federal, metadata, created_at FROM transactions WHERE id = ?', [insert.insertId]);
+        return res.status(201).json(row);
+      } catch (err) {
+        return res.status(500).json({ error: 'create_failed', message: err?.message || '' , payload: result });
+      }
+    }
     return res.json(result);
   } catch (e) {
     const msg = e?.message || '';
