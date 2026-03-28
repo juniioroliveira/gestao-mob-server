@@ -86,7 +86,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
-                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil). Regra: para FATURAS/BOLETOS/CONTAS (ex.: \"Fatura de Cartão\",\"Boleto\",\"Conta de Luz\",\"Conta de Água\",\"Conta de Internet\",\"Conta de Celular\"), occurred_at deve ser a DATA DE VENCIMENTO; para COMPROVANTES/NOTAS/RECIBOS/CUPONS, occurred_at deve ser a DATA DO DOCUMENTO. Nunca use a data/hora atual; se não identificar, retorne null, " +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil). Regra: para FATURAS/BOLETOS/CONTAS (ex.: \"Fatura de Cartão\",\"Boleto\",\"Conta de Luz\",\"Conta de Água\",\"Conta de Internet\",\"Conta de Celular\"), occurred_at deve ser a DATA DE VENCIMENTO; para COMPROVANTES/NOTAS/RECIBOS/CUPONS, occurred_at deve ser a DATA DO DOCUMENTO. Nunca use a data/hora atual; se não identificar, retorne null. " +
                 'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
                 'description (um título curto e CANÔNICO da natureza do gasto/recebimento; evite variações) ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
@@ -197,21 +197,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       }
       return toSqlDatetime(v);
     }
-    const occurred_at_candidates_sync = [
-      parsed?.occurred_at,
-      docMeta?.occurred_at_original,
-      docMeta?.due_date,
-      docMeta?.vencimento,
-      docMeta?.due,
-    ];
     let occurred_at = null;
-    for (const c of occurred_at_candidates_sync) {
-      const dt = parseBrDatetime(c);
-      if (dt) {
-        occurred_at = dt;
-        break;
-      }
-    }
     function cleanDescription(s) {
       return String(s || '')
         .replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '')
@@ -486,17 +472,20 @@ export async function processIngestJobById(jobId) {
                 'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
-                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil). Regra: para FATURAS/BOLETOS/CONTAS (ex.: \"Fatura de Cartão\",\"Boleto\",\"Conta de Luz\",\"Conta de Água\",\"Conta de Internet\",\"Conta de Celular\"), occurred_at deve ser a DATA DE VENCIMENTO; para COMPROVANTES/NOTAS/RECIBOS/CUPONS, occurred_at deve ser a DATA DO DOCUMENTO. Nunca use a data/hora atual; se não identificar, retorne null, " +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil). Regra: para FATURAS/BOLETOS/CONTAS (ex.: \"Fatura de Cartão\",\"Boleto\",\"Conta de Luz\",\"Conta de Água\",\"Conta de Internet\",\"Conta de Celular\"), occurred_at deve ser a DATA DE VENCIMENTO; para COMPROVANTES/NOTAS/RECIBOS/CUPONS, occurred_at deve ser a DATA DO DOCUMENTO. Nunca use a data/hora atual; se não identificar, retorne null. " +
                 'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
-                'description (um título curto que descreve a NATUREZA do gasto/recebimento), ' +
-                'category_id (um ID escolhido da lista fornecida). ' +
-                'Inclua também um campo metadata com os dados do DOCUMENTO contendo: issuer_name, issuer_federal_id, document_type, document_number, series, payment_method, currency, occurred_at_original, due_date/vencimento, items e totals.',
+                'description (um título curto e CANÔNICO da natureza do gasto/recebimento; evite variações), ' +
+                'category_id (um ID escolhido da lista fornecida; persistindo dúvida, deixe category_id vazio e inclua category_name). ' +
+                'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
+                'Nunca inclua valores formatados com R$, apenas número em amount. ' +
+                'A saída deve ser somente JSON sem comentários. ' +
+                'Inclua também um campo metadata com os dados do DOCUMENTO contendo (preencher SEMPRE issuer_name e document_type): issuer_name, issuer_federal_id, document_type, document_number, series, payment_method, currency, occurred_at_original (data/hora como no documento), due_date/vencimento (se houver), items e totals.',
             },
             {
               text:
-                'Categorias do usuário com IDs e subcategorias/sinônimos: ' +
+                'Categorias do usuário com IDs e subcategorias/sinônimos (EXEMPLOS, não regras rígidas): ' +
                 JSON.stringify(catList) +
-                '. Escolha o category_id que melhor representa a transação, considerando os sinônimos e subcategorias fornecidas.',
+                '. Use as subcategorias apenas como referência para aprendizado; se não houver correspondência clara, escolha a categoria que melhor representa a transação. Persistindo dúvida, deixe category_id vazio e inclua category_name.',
             },
             { inlineData: { data, mimeType } },
           ],
