@@ -86,7 +86,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
-                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil). Regra: para FATURAS/BOLETOS/CONTAS (ex.: \"Fatura de Cartão\",\"Boleto\",\"Conta de Luz\",\"Conta de Água\",\"Conta de Internet\",\"Conta de Celular\"), occurred_at deve ser a DATA DE VENCIMENTO; para COMPROVANTES/NOTAS/RECIBOS/CUPONS, occurred_at deve ser a DATA DO DOCUMENTO. Nunca use a data/hora atual; se não identificar, retorne null, " +
                 'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
                 'description (um título curto e CANÔNICO da natureza do gasto/recebimento; evite variações) ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
@@ -94,7 +94,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'Nunca inclua valores formatados com R$, apenas número em amount. ' +
                 'A saída deve ser somente JSON sem comentários. ' +
                 'Inclua também um campo metadata com os dados do DOCUMENTO contendo (preencher SEMPRE issuer_name e document_type): ' +
-                'issuer_name (nome do emissor/beneficiário), issuer_federal_id (CNPJ ou CPF), document_type (use uma destas labels CANÔNICAS quando aplicável: "Conta de Luz","Conta de Água","Conta de Internet","Conta de Celular","Fatura de Cartão","Cupom de Estacionamento","Pedágio","Supermercado - Nota","Farmácia - Nota","Nota Fiscal","Boleto","Recibo"), document_number, series, payment_method, currency (ex.: BRL), occurred_at_original (data/hora como no documento), ' +
+                'issuer_name (nome do emissor/beneficiário), issuer_federal_id (CNPJ ou CPF), document_type (use uma destas labels CANÔNICAS quando aplicável: "Conta de Luz","Conta de Água","Conta de Internet","Conta de Celular","Fatura de Cartão","Cupom de Estacionamento","Pedágio","Supermercado - Nota","Farmácia - Nota","Nota Fiscal","Boleto","Recibo"), document_number, series, payment_method, currency (ex.: BRL), occurred_at_original (data/hora como no documento), due_date/vencimento (se houver), ' +
                 'items (lista de itens com description, quantity, unit_price, total) e totals (subtotal, discount, tax, total).',
             },
             {
@@ -354,6 +354,23 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       const issuer_name_norm = canonicalIssuerName(docMeta?.issuer_name || null, description);
       const doc_type_norm = canonicalDocType(description, issuer_name_norm) || docMeta?.document_type || null;
       description = canonicalTitle(doc_type_norm, issuer_name_norm, description);
+      function isInvoiceDocType(s) {
+        const n = normalizeText(s || '');
+        return /(fatura.*cart|boleto|conta de luz|conta de [aá]gua|conta de internet|conta de celular)/.test(n);
+      }
+      {
+        const invoice = isInvoiceDocType(doc_type_norm);
+        const cands = invoice
+          ? [docMeta?.due_date, docMeta?.vencimento, docMeta?.due, parsed?.occurred_at, docMeta?.occurred_at_original]
+          : [docMeta?.occurred_at_original, parsed?.occurred_at, docMeta?.due_date, docMeta?.vencimento, docMeta?.due];
+        for (const c of cands) {
+          const dt = parseBrDatetime(c);
+          if (dt) {
+            occurred_at = dt;
+            break;
+          }
+        }
+      }
       const metadata = {
       source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
       document: {
@@ -469,11 +486,11 @@ export async function processIngestJobById(jobId) {
                 'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
-                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; em faturas use a data de vencimento, em comprovantes use a data do documento; se não encontrar no documento, retorne null), " +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil). Regra: para FATURAS/BOLETOS/CONTAS (ex.: \"Fatura de Cartão\",\"Boleto\",\"Conta de Luz\",\"Conta de Água\",\"Conta de Internet\",\"Conta de Celular\"), occurred_at deve ser a DATA DE VENCIMENTO; para COMPROVANTES/NOTAS/RECIBOS/CUPONS, occurred_at deve ser a DATA DO DOCUMENTO. Nunca use a data/hora atual; se não identificar, retorne null, " +
                 'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
                 'description (um título curto que descreve a NATUREZA do gasto/recebimento), ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
-                'Inclua também um campo metadata com os dados do DOCUMENTO contendo: issuer_name, issuer_federal_id, document_type, document_number, series, payment_method, currency, occurred_at_original, items e totals.',
+                'Inclua também um campo metadata com os dados do DOCUMENTO contendo: issuer_name, issuer_federal_id, document_type, document_number, series, payment_method, currency, occurred_at_original, due_date/vencimento, items e totals.',
             },
             {
               text:
@@ -611,26 +628,29 @@ export async function processIngestJobById(jobId) {
       }
     }
           const docMeta = parsed?.metadata || {};
-          const occurred_at_candidates = [
-            parsed?.occurred_at,
-            docMeta?.occurred_at_original,
-            docMeta?.due_date,
-            docMeta?.vencimento,
-            docMeta?.due,
-          ];
-          let occurred_at = null;
-          for (const c of occurred_at_candidates) {
-            const dt = parseBrDatetime(c);
-            if (dt) {
-              occurred_at = dt;
-              break;
-            }
-          }
     const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
     const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
     const issuer_name_norm2 = canonicalIssuerName(docMeta?.issuer_name || null, description);
     const doc_type_norm2 = canonicalDocType(description, issuer_name_norm2) || docMeta?.document_type || null;
     description = canonicalTitle(doc_type_norm2, issuer_name_norm2, description);
+    function isInvoiceDocType2(s) {
+      const n = normalizeText(s || '');
+      return /(fatura.*cart|boleto|conta de luz|conta de [aá]gua|conta de internet|conta de celular)/.test(n);
+    }
+    let occurred_at = null;
+    {
+      const invoice = isInvoiceDocType2(doc_type_norm2);
+      const cands = invoice
+        ? [docMeta?.due_date, docMeta?.vencimento, docMeta?.due, parsed?.occurred_at, docMeta?.occurred_at_original]
+        : [docMeta?.occurred_at_original, parsed?.occurred_at, docMeta?.due_date, docMeta?.vencimento, docMeta?.due];
+      for (const c of cands) {
+        const dt = parseBrDatetime(c);
+        if (dt) {
+          occurred_at = dt;
+          break;
+        }
+      }
+    }
     if (!category_id && userId) {
       try {
         const hist = await query('SELECT category_id FROM transactions WHERE user_id = ? AND description = ? AND category_id IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1', [userId, description]);
