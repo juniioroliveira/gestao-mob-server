@@ -174,12 +174,14 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
           const docMeta = parsed?.metadata || {};
           const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
           const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
-          const metadata = {
+    const issuer_name_norm2 = canonicalIssuerName(docMeta?.issuer_name || null, description);
+    const doc_type_norm2 = canonicalDocType(description, issuer_name_norm2) || docMeta?.document_type || null;
+    const metadata = {
             source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
             document: {
-              issuer_name: docMeta?.issuer_name ?? null,
+        issuer_name: issuer_name_norm2 ?? docMeta?.issuer_name ?? null,
               issuer_federal_id: normalizeFederalId(docMeta?.issuer_federal_id) || null,
-              document_type: docMeta?.document_type ?? null,
+        document_type: doc_type_norm2 ?? null,
               document_number: docMeta?.document_number ?? null,
               series: docMeta?.series ?? null,
               occurred_at_original: docMeta?.occurred_at_original ?? (parsed?.occurred_at ?? null),
@@ -273,13 +275,13 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'amount (número decimal com ponto, ex: 54.52), ' +
                 "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
                 'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
-                'description (um título curto que descreve a NATUREZA do gasto/recebimento, como Estacionamento, Combustível, Supermercado, Restaurante, Padaria, Farmácia, Pedágio, Transporte por aplicativo, Assinatura, Mensalidade, Eletrônicos; evitar razão social e sufixos como LTDA, EIRELI, CNPJ), ' +
+                'description (um título curto e CANÔNICO da natureza do gasto/recebimento; evite variações) ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
                 'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
                 'Nunca inclua valores formatados com R$, apenas número em amount. ' +
                 'A saída deve ser somente JSON sem comentários. ' +
-                'Inclua também um campo metadata com os dados do DOCUMENTO contendo: ' +
-                'issuer_name (nome do emissor), issuer_federal_id (CNPJ ou CPF), document_type (cupom, nota, recibo, etc.), document_number, series, payment_method, currency (ex.: BRL), occurred_at_original (data/hora como no documento), ' +
+                'Inclua também um campo metadata com os dados do DOCUMENTO contendo (preencher SEMPRE issuer_name e document_type): ' +
+                'issuer_name (nome do emissor/beneficiário), issuer_federal_id (CNPJ ou CPF), document_type (use uma destas labels CANÔNICAS quando aplicável: "Conta de Luz","Conta de Água","Conta de Internet","Conta de Celular","Fatura de Cartão","Cupom de Estacionamento","Pedágio","Supermercado - Nota","Farmácia - Nota","Nota Fiscal","Boleto","Recibo"), document_number, series, payment_method, currency (ex.: BRL), occurred_at_original (data/hora como no documento), ' +
                 'items (lista de itens com description, quantity, unit_price, total) e totals (subtotal, discount, tax, total).',
             },
             {
@@ -386,6 +388,47 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '');
     }
+    function canonicalIssuerName(name, desc) {
+      const n = normalizeText(name) || normalizeText(desc);
+      if (/enel|eletropaulo|elektro|cpfl|light|equatorial|celesc|cemig/.test(n)) return 'Enel';
+      if (/sabesp|sanepar|copasa|compesa|cagece|saneago/.test(n)) return 'Sabesp';
+      if (/\bvivo\b|telefonica/.test(n)) return 'Vivo';
+      if (/\bclaro\b|net\b/.test(n)) return 'Claro';
+      if (/\btim\b/.test(n)) return 'TIM';
+      if (/\boi\b/.test(n)) return 'Oi';
+      if (/sem\s*parar/.test(n)) return 'Sem Parar';
+      return name || null;
+    }
+    function canonicalDocType(desc, issuer) {
+      const d = normalizeText(desc + ' ' + (issuer || ''));
+      if (/luz|energia|eletric/.test(d)) return 'Conta de Luz';
+      if (/\bagua\b|sanepar|sabesp/.test(d)) return 'Conta de Água';
+      if (/internet|fibra|banda larga|net|claro|vivo|oi fibra/.test(d)) return 'Conta de Internet';
+      if (/plano|celular|telefonia/.test(d)) return 'Conta de Celular';
+      if (/fatura.*cart[aã]o|cart[aã]o.*fatura/.test(d)) return 'Fatura de Cartão';
+      if (/estacion|parking/.test(d)) return 'Cupom de Estacionamento';
+      if (/ped[aá]gio|sem\s*parar/.test(d)) return 'Pedágio';
+      if (/supermerc|mercado/.test(d)) return 'Supermercado - Nota';
+      if (/farm[aá]cia|droga|drogasil|raia|panvel|pacheco/.test(d)) return 'Farmácia - Nota';
+      if (/nota\s*fiscal|nfe|nf-e/.test(d)) return 'Nota Fiscal';
+      if (/boleto|linha\s*digit[aá]vel/.test(d)) return 'Boleto';
+      if (/recibo/.test(d)) return 'Recibo';
+      return null;
+    }
+    function heuristicCategoryIdByDocType(docType, catList) {
+      if (!docType) return null;
+      const nameNorm = normalizeText(docType);
+      const pickByName = (name) => {
+        const target = normalizeText(name);
+        const m = catList.find((c) => normalizeText(c.name) === target);
+        return m ? Number(m.id) : null;
+      };
+      if (/conta de luz|conta de [aá]gua|conta de internet|conta de celular|cupom de estacion|ped[aá]gio/.test(nameNorm)) {
+        return pickByName('Essencial Fixo');
+      }
+      if (/supermercado|farm[aá]cia/.test(nameNorm)) return pickByName('Essencial Variável');
+      return null;
+    }
     function heuristicCategoryIdByDescription(desc, catList) {
       const d = normalizeText(desc);
       const pickByName = (name) => {
@@ -446,12 +489,6 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     const docMeta = parsed?.metadata || {};
     const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
     const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
-      if (!category_id) {
-        category_id = heuristicCategoryIdByDescription(description, catList) || null;
-      }
-    if (!category_id) {
-      category_id = heuristicCategoryIdByDescription(description, catList) || null;
-    }
     // Heuristic: map account_id for liabilities if description suggests "fatura/cartão"
     let account_id = null;
     if (userId) {
@@ -464,12 +501,14 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         } catch {}
       }
     }
-    const metadata = {
+      const issuer_name_norm = canonicalIssuerName(docMeta?.issuer_name || null, description);
+      const doc_type_norm = canonicalDocType(description, issuer_name_norm) || docMeta?.document_type || null;
+      const metadata = {
       source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
       document: {
-        issuer_name: docMeta?.issuer_name ?? null,
+          issuer_name: issuer_name_norm ?? docMeta?.issuer_name ?? null,
         issuer_federal_id: normalizeFederalId(docMeta?.issuer_federal_id) || null,
-        document_type: docMeta?.document_type ?? null,
+          document_type: doc_type_norm ?? null,
         document_number: docMeta?.document_number ?? null,
         series: docMeta?.series ?? null,
         occurred_at_original: docMeta?.occurred_at_original ?? (parsed?.occurred_at ?? null),
@@ -494,6 +533,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     };
     const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal: inscricao_federal_out, metadata };
     if (autoCreate && userId) {
+      if (!category_id) category_id = heuristicCategoryIdByDocType(doc_type_norm, catList) || heuristicCategoryIdByDescription(description, catList) || null;
       const nowSql = (() => {
         const d = new Date();
         const pad = (n) => String(n).padStart(2, '0');
