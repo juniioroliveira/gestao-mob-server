@@ -57,7 +57,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
-                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil), " +
+                "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
                 'description (um título curto que descreve a NATUREZA do gasto/recebimento, como Estacionamento, Combustível, Supermercado, Restaurante, Padaria, Farmácia, Pedágio, Transporte por aplicativo, Assinatura, Mensalidade, Eletrônicos; evitar razão social e sufixos como LTDA, EIRELI, CNPJ), ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
                 'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
@@ -85,7 +85,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
             description: { type: Type.STRING },
             category_id: { type: Type.NUMBER },
           },
-          required: ['type', 'amount', 'occurred_at', 'description'],
+          required: ['type', 'amount', 'description'],
         },
       },
     });
@@ -100,7 +100,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     }
     // Normalize amount
     const amount = Number(parsed?.amount);
-    // Normalize occurred_at to 'YYYY-MM-DD HH:mm:ss'
+    // Normalize occurred_at to 'YYYY-MM-DD HH:mm:ss' or null when not found
     function toSqlDatetime(s) {
       const tryDate = new Date(s);
       if (!isNaN(tryDate.getTime())) {
@@ -113,9 +113,9 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         const ss = pad(tryDate.getSeconds());
         return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}`;
       }
-      return new Date().toISOString().slice(0, 19).replace('T', ' ');
+      return null;
     }
-    const occurred_at = toSqlDatetime(parsed?.occurred_at);
+    const occurred_at = parsed?.occurred_at == null ? null : toSqlDatetime(parsed?.occurred_at);
     function cleanDescription(s) {
       return String(s || '')
         .replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '')
