@@ -58,6 +58,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
                 'type (income|expense|transfer), ' +
                 'amount (número decimal com ponto, ex: 54.52), ' +
                 "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
+                'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
                 'description (um título curto que descreve a NATUREZA do gasto/recebimento, como Estacionamento, Combustível, Supermercado, Restaurante, Padaria, Farmácia, Pedágio, Transporte por aplicativo, Assinatura, Mensalidade, Eletrônicos; evitar razão social e sufixos como LTDA, EIRELI, CNPJ), ' +
                 'category_id (um ID escolhido da lista fornecida). ' +
                 'Se a data estiver no formato brasileiro (ex. 15/02/2026), use-a; caso falte o ano, infira pelo contexto do documento ou use o ano atual. ' +
@@ -82,6 +83,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
             type: { type: Type.STRING, enum: ['income', 'expense', 'transfer'] },
             amount: { type: Type.NUMBER },
             occurred_at: { type: Type.STRING },
+            inscricao_federal: { type: Type.STRING },
             description: { type: Type.STRING },
             category_id: { type: Type.NUMBER },
           },
@@ -122,6 +124,11 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         .replace(/\s{2,}/g, ' ')
         .trim();
     }
+    function normalizeFederalId(s) {
+      const digits = String(s || '').replace(/[^\d]/g, '');
+      if (digits.length === 14 || digits.length === 11) return digits;
+      return '';
+    }
     function toNatureLabel(s) {
       const v = String(s || '').toLowerCase();
       if (/\bestac/i.test(v) || /\bparking\b/.test(v)) return 'Estacionamento';
@@ -155,6 +162,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       const cid = Number(parsed?.category_id);
       category_id = Number.isFinite(cid) ? cid : null;
     }
+    const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal);
     // Heuristic: map account_id for liabilities if description suggests "fatura/cartão"
     let account_id = null;
     if (userId) {
@@ -167,7 +175,14 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         } catch {}
       }
     }
-    const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description };
+    const metadata = {
+      source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
+      document: { occurred_at_original: parsed?.occurred_at ?? null, federal_id: inscricao_federal || null },
+      classification: { category_id, category_name: parsed?.category_name ?? null, type },
+      totals: { amount: Number.isFinite(amount) ? amount : 0 },
+      ai: { model: 'gemini-3-flash-preview' },
+    };
+    const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal, metadata };
     return res.json(result);
   } catch (e) {
     const msg = e?.message || '';

@@ -25,7 +25,7 @@ async function run() {
         amount DECIMAL(18,2) NOT NULL,
         description VARCHAR(255) NULL,
         frequency ENUM('daily','weekly','monthly') NOT NULL,
-        interval INT NOT NULL DEFAULT 1,
+        \`interval\` INT NOT NULL DEFAULT 1,
         day_of_month TINYINT NULL,
         day_of_week TINYINT NULL,
         start_date DATE NOT NULL,
