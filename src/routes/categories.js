@@ -10,7 +10,7 @@ router.get('/categories', async (req, res, next) => {
     const rows = await query('SELECT id, user_id, name, color, icon, percent, subcategories, created_at FROM categories WHERE user_id = ? ORDER BY name ASC', [userId]);
     res.json(rows);
   } catch (e) {
-    next(e);
+    next(e); 
   }
 });
 
