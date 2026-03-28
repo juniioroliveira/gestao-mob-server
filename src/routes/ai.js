@@ -39,7 +39,182 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     if (!data || !mimeType) return res.status(400).json({ error: 'invalid_body' });
 
     const userId = Number(req.auth?.userId || req.query.userId);
+    const isAsync = String(req.query.async || (req.body ? req.body.async : '') || '') === '1';
+    const autoCreate = String(req.query.create || (req.body ? req.body.create : '') || '') === '1';
+    if (isAsync && autoCreate && userId) {
+      res.status(202).json({ queued: 1 });
+      setImmediate(async () => {
+        try {
+          let categories = [];
+          try {
+            categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
+          } catch {}
+          const catList = Array.isArray(categories)
+            ? categories.map((c) => {
+                let subs = [];
+                try {
+                  const raw = typeof c.subcategories === 'string' ? JSON.parse(c.subcategories) : c.subcategories;
+                  subs = Array.isArray(raw) ? raw.map((s) => String(s)) : [];
+                } catch {}
+                return { id: Number(c.id), name: String(c.name), subcategories: subs };
+              })
+            : [];
+          const ai = new GoogleGenAI({ apiKey });
+          const response = await ai.models.generateContent({
+            model: 'gemini-3-flash-preview',
+            contents: [
+              {
+                parts: [
+                  {
+                    text:
+                      'Analise este comprovante/documento e RETORNE APENAS um objeto JSON com: ' +
+                      'type (income|expense|transfer), ' +
+                      'amount (número decimal com ponto, ex: 54.52), ' +
+                      "occurred_at (string no formato 'YYYY-MM-DD HH:mm:ss', horário local do Brasil; se não encontrar no documento, retorne null), " +
+                      'inscricao_federal (CNPJ ou CPF presente no documento; se não encontrar, use vazio), ' +
+                      'description (um título curto que descreve a NATUREZA do gasto/recebimento), ' +
+                      'category_id (um ID escolhido da lista fornecida). ' +
+                      'Inclua também um campo metadata com os dados do DOCUMENTO contendo: issuer_name, issuer_federal_id, document_type, document_number, series, payment_method, currency, occurred_at_original, items e totals.',
+                  },
+                  {
+                    text:
+                      'Categorias do usuário com IDs e subcategorias/sinônimos: ' +
+                      JSON.stringify(catList) +
+                      '. Escolha o category_id que melhor representa a transação, considerando os sinônimos e subcategorias fornecidas.',
+                  },
+                  { inlineData: { data, mimeType } },
+                ],
+              },
+            ],
+            config: {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  type: { type: Type.STRING, enum: ['income', 'expense', 'transfer'] },
+                  amount: { type: Type.NUMBER },
+                  occurred_at: { type: Type.STRING },
+                  inscricao_federal: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  category_id: { type: Type.NUMBER },
+                  metadata: { type: Type.OBJECT },
+                },
+                required: ['type', 'amount', 'description', 'metadata'],
+              },
+            },
+          });
+          const text = response?.text;
+          if (!text) return;
+          let parsed;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            return;
+          }
+          const amount = Number(parsed?.amount);
+          function toSqlDatetime(s) {
+            const tryDate = new Date(s);
+            if (!isNaN(tryDate.getTime())) {
+              const pad = (n) => String(n).padStart(2, '0');
+              const yyyy = tryDate.getFullYear();
+              const MM = pad(tryDate.getMonth() + 1);
+              const dd = pad(tryDate.getDate());
+              const hh = pad(tryDate.getHours());
+              const mm = pad(tryDate.getMinutes());
+              const ss = pad(tryDate.getSeconds());
+              return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}`;
+            }
+            return null;
+          }
+          function cleanDescription(s) {
+            return String(s || '')
+              .replace(/\b(LTDA|ME|EIRELI|S\.?A\.?|SA|CNPJ|CPF|RAZÃO SOCIAL|RAZAO SOCIAL)\b/gi, '')
+              .replace(/\s{2,}/g, ' ')
+              .trim();
+          }
+          function normalizeFederalId(s) {
+            const digits = String(s || '').replace(/[^\d]/g, '');
+            if (digits.length === 14 || digits.length === 11) return digits;
+            return '';
+          }
+          let description = cleanDescription(parsed?.description);
+          const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
+          let category_id = null;
+          if (Array.isArray(catList) && catList.length) {
+            const cid = Number(parsed?.category_id);
+            if (Number.isFinite(cid) && catList.some((c) => Number(c.id) === cid)) {
+              category_id = cid;
+            } else {
+              const cname = String(parsed?.category_name || '').toLowerCase();
+              const match = catList.find((c) => {
+                if (String(c.name).toLowerCase() === cname) return true;
+                const subs = Array.isArray(c.subcategories) ? c.subcategories : [];
+                return subs.some((s) => String(s).toLowerCase() === cname);
+              });
+              category_id = match ? Number(match.id) : null;
+            }
+          }
+          const occurred_at = parsed?.occurred_at == null ? null : toSqlDatetime(parsed?.occurred_at);
+          const docMeta = parsed?.metadata || {};
+          const inscricao_federal = normalizeFederalId(parsed?.inscricao_federal || docMeta?.issuer_federal_id);
+          const inscricao_federal_out = inscricao_federal === '' ? ' ' : inscricao_federal;
+          const metadata = {
+            source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
+            document: {
+              issuer_name: docMeta?.issuer_name ?? null,
+              issuer_federal_id: normalizeFederalId(docMeta?.issuer_federal_id) || null,
+              document_type: docMeta?.document_type ?? null,
+              document_number: docMeta?.document_number ?? null,
+              series: docMeta?.series ?? null,
+              occurred_at_original: docMeta?.occurred_at_original ?? (parsed?.occurred_at ?? null),
+              payment_method: docMeta?.payment_method ?? null,
+              currency: docMeta?.currency ?? 'BRL',
+            },
+            items: Array.isArray(docMeta?.items)
+              ? docMeta.items.map((i) => ({
+                  description: String(i?.description || ''),
+                  quantity: Number(i?.quantity || 0),
+                  unit_price: Number(i?.unit_price || 0),
+                  total: Number(i?.total ?? (Number(i?.quantity || 0) * Number(i?.unit_price || 0))),
+                }))
+              : [],
+            totals: {
+              subtotal: Number(docMeta?.totals?.subtotal ?? 0),
+              discount: Number(docMeta?.totals?.discount ?? 0),
+              tax: Number(docMeta?.totals?.tax ?? 0),
+              total: Number.isFinite(amount) ? amount : Number(docMeta?.totals?.total ?? 0),
+            },
+            ai: { model: 'gemini-3-flash-preview' },
+          };
+          const nowSql = (() => {
+            const d = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+          })();
+          const occurred_at_sql = occurred_at || nowSql;
+          await query(
+            'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              userId,
+              null,
+              category_id || null,
+              type,
+              Number.isFinite(amount) ? amount : 0,
+              occurred_at_sql,
+              description || null,
+              inscricao_federal_out || null,
+              JSON.stringify(metadata || {}),
+            ]
+          );
+        } catch (err) {
+          // swallow errors in background
+          console.error('Background AI ingest failed', err?.message || err);
+        }
+      });
+      return;
+    }
     let categories = [];
+    if (userId) {
     if (userId) {
       try {
         categories = await query('SELECT id, name, subcategories FROM categories WHERE user_id = ?', [userId]);
