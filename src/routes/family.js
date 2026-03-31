@@ -193,13 +193,15 @@ export async function processDueSalaries() {
     const runAt = new Date(String(s.next_run_at).replace('T', ' ').replace('Z', ''));
     const occurred = toSqlDatetime(new Date());
     const runAtSql = toSqlDatetime(runAt);
-    await query(
+    const ins = await query(
       'INSERT IGNORE INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, salary_id, salary_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [s.user_id, null, null, 'income', s.amount, occurred, `Salário - ${s.member_name}`, s.id, runAtSql]
     );
-    const next = computeNextSalaryRun({ frequency: s.frequency }, runAt);
-    const nextSql = toSqlDatetime(next);
-    await query('UPDATE member_salaries SET last_run_at = ?, next_run_at = ? WHERE id = ?', [occurred, nextSql, s.id]);
+    if (Number(ins?.affectedRows || 0) === 1) {
+      const next = computeNextSalaryRun({ frequency: s.frequency }, runAt);
+      const nextSql = toSqlDatetime(next);
+      await query('UPDATE member_salaries SET last_run_at = ?, next_run_at = ? WHERE id = ?', [occurred, nextSql, s.id]);
+    }
   }
   return { processed: due.length };
 }
