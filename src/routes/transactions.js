@@ -78,12 +78,34 @@ router.put('/transactions/:id', async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const { account_id, category_id, member_id, type, amount, occurred_at, description, inscricao_federal, metadata } = req.body || {};
+    const [before] = await query('SELECT id, user_id, metadata FROM transactions WHERE id = ?', [id]);
     await query(
       'UPDATE transactions SET account_id = COALESCE(?, account_id), category_id = COALESCE(?, category_id), member_id = COALESCE(?, member_id), type = COALESCE(?, type), amount = COALESCE(?, amount), occurred_at = COALESCE(?, occurred_at), description = COALESCE(?, description), inscricao_federal = COALESCE(?, inscricao_federal), metadata = COALESCE(?, metadata) WHERE id = ?',
       [account_id ?? null, category_id ?? null, member_id ?? null, type || null, amount ?? null, occurred_at || null, description || null, (inscricao_federal ?? null), metadata ? JSON.stringify(metadata) : null, id]
     );
     const [row] = await query('SELECT id, user_id, account_id, category_id, member_id, type, amount, occurred_at, description, inscricao_federal, metadata, created_at FROM transactions WHERE id = ?', [id]);
     if (!row) return res.status(404).json({ error: 'not_found' });
+    try {
+      const userId = Number(row.user_id);
+      const meta = (() => {
+        try {
+          return typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata;
+        } catch {
+          return null;
+        }
+      })();
+      const doc = meta?.document || {};
+      const issuer_federal_id = (doc.issuer_federal_id || row.inscricao_federal || '').toString().replace(/[^\d]/g, '') || null;
+      const issuer_name = doc.issuer_name || null;
+      const document_type = doc.document_type || null;
+      const title = row.description || null;
+      if (userId && (row.category_id || title) && (issuer_federal_id || issuer_name || document_type)) {
+        await query(
+          'INSERT INTO ai_hints (user_id, issuer_federal_id, issuer_name, document_type, title, category_id) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE title = VALUES(title), category_id = COALESCE(VALUES(category_id), category_id)',
+          [userId, issuer_federal_id, issuer_name, document_type, title, row.category_id || null]
+        );
+      }
+    } catch {}
     res.json(row);
   } catch (e) {
     next(e);
@@ -137,6 +159,29 @@ router.put('/transactions/:id/occurred', async (req, res, next) => {
     );
     if (!row) return res.status(404).json({ error: 'not_found' });
     res.json(row);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/transactions/pending-validation', async (req, res, next) => {
+  try {
+    const userId = Number(req.auth?.userId || req.query.userId);
+    if (!userId) return res.status(400).json({ error: 'userId_required' });
+    const limit = Math.min(Number(req.query.limit || 50), 200);
+    const offset = Number(req.query.offset || 0);
+    const where = 'user_id = ? AND (occurred_at IS NULL OR category_id IS NULL OR description IS NULL OR description = \'\')';
+    const countRows = await query(`SELECT COUNT(*) AS c FROM transactions WHERE ${where}`, [userId]);
+    const total = Number(countRows?.[0]?.c || 0);
+    const items = await query(
+      `SELECT id, user_id, account_id, category_id, member_id, type, amount, occurred_at, description, inscricao_federal, metadata, created_at
+       FROM transactions
+       WHERE ${where}
+       ORDER BY created_at DESC, id DESC
+       LIMIT ? OFFSET ?`,
+      [userId, limit, offset]
+    );
+    res.json({ total, items });
   } catch (e) {
     next(e);
   }

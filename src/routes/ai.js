@@ -4,6 +4,9 @@ import { config } from '../config/env.js';
 import multer from 'multer';
 import sharp from 'sharp';
 import { query } from '../db/query.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const router = Router();
 
@@ -20,6 +23,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     let data = null;
     let mimeType = null;
 
+    let savedImagePublicPath = null;
     if (req.file && req.file.buffer) {
       mimeType = req.file.mimetype;
       const isImage = mimeType?.startsWith('image/');
@@ -27,6 +31,15 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         const buf = await sharp(req.file.buffer).rotate().resize({ width: 1280, withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();
         data = buf.toString('base64');
         mimeType = 'image/jpeg';
+        try {
+          const __dirname = path.dirname(fileURLToPath(import.meta.url));
+          const projectRoot = path.resolve(__dirname, '..', '..');
+          const docsDir = path.resolve(projectRoot, 'uploads', 'docs', String(req.auth?.userId || 'anon'));
+          fs.mkdirSync(docsDir, { recursive: true });
+          const fileName = `doc_${Date.now()}.jpg`;
+          fs.writeFileSync(path.join(docsDir, fileName), buf);
+          savedImagePublicPath = `/uploads/docs/${req.auth?.userId || 'anon'}/${fileName}`;
+        } catch {}
       } else {
         data = req.file.buffer.toString('base64');
       }
@@ -357,6 +370,21 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
           }
         }
       }
+      // Apply user hints (learning)
+      if (userId) {
+        try {
+          const hints = await query(
+            'SELECT * FROM ai_hints WHERE user_id = ? AND (issuer_federal_id = ? OR (issuer_federal_id IS NULL AND issuer_name = ?)) AND (document_type = ? OR document_type IS NULL) ORDER BY created_at DESC LIMIT 1',
+            [userId, inscricao_federal || null, issuer_name_norm || null, doc_type_norm || null]
+          );
+          const hint = hints[0];
+          if (hint) {
+            if (!category_id && hint.category_id) category_id = Number(hint.category_id);
+            if (hint.title) description = String(hint.title);
+          }
+        } catch {}
+      }
+
       const metadata = {
       source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
       document: {
@@ -385,6 +413,10 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
       },
       ai: { model: 'gemini-3-flash-preview' },
     };
+    if (savedImagePublicPath) {
+      metadata.document = metadata.document || {};
+      metadata.document.image_url = savedImagePublicPath;
+    }
     const result = { account_id, category_id, type, amount: Number.isFinite(amount) ? amount : 0, occurred_at, description, inscricao_federal: inscricao_federal_out, metadata };
     if (autoCreate && userId) {
       if (!category_id && userId && description) {
@@ -647,15 +679,53 @@ export async function processIngestJobById(jobId) {
         if (Number.isFinite(hid) && hid > 0) category_id = hid;
       } catch {}
     }
+    // Apply user hints (learning)
+    if (userId) {
+      try {
+        const hints = await query(
+          'SELECT * FROM ai_hints WHERE user_id = ? AND (issuer_federal_id = ? OR (issuer_federal_id IS NULL AND issuer_name = ?)) AND (document_type = ? OR document_type IS NULL) ORDER BY created_at DESC LIMIT 1',
+          [userId, normalizeFederalId(docMeta?.issuer_federal_id) || null, issuer_name_norm2 || null, doc_type_norm2 || null]
+        );
+        const hint = hints[0];
+        if (hint) {
+          if (!category_id && hint.category_id) category_id = Number(hint.category_id);
+          if (hint.title) description = String(hint.title);
+        }
+      } catch {}
+    }
     const occurred_at_sql = occurred_at || null;
     const requiredOk = type && Number.isFinite(amount) && description && String(description).length > 0;
     if (!requiredOk) {
       await query('UPDATE ingest_jobs SET status = ?, ai_output = ? WHERE id = ?', ['needs_review', JSON.stringify({ type, amount, occurred_at, description, category_id }), jobId]);
       return;
     }
+    // Persist optional image file for preview
+    let savedImagePublicPath = null;
+    try {
+      if (String(mimeType || '').startsWith('image/') && data) {
+        const __dirname = path.dirname(fileURLToPath(import.meta.url));
+        const projectRoot = path.resolve(__dirname, '..', '..');
+        const docsDir = path.resolve(projectRoot, 'uploads', 'docs', String(userId || 'anon'));
+        fs.mkdirSync(docsDir, { recursive: true });
+        const fileName = `job${jobId}_${Date.now()}.jpg`;
+        const buffer = Buffer.from(data, 'base64');
+        const out = await sharp(buffer).rotate().resize({ width: 1280, withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();
+        fs.writeFileSync(path.join(docsDir, fileName), out);
+        savedImagePublicPath = `/uploads/docs/${userId || 'anon'}/${fileName}`;
+      }
+    } catch {}
+    const finalMetadata = {
+      source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
+      ai: { model: 'gemini-3-flash-preview' },
+      document: docMeta || {},
+    };
+    if (savedImagePublicPath) {
+      finalMetadata.document = finalMetadata.document || {};
+      finalMetadata.document.image_url = savedImagePublicPath;
+    }
     const insTx = await query(
       'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [userId, null, category_id || null, type, Number.isFinite(amount) ? amount : 0, occurred_at_sql, description || null, inscricao_federal_out || null, JSON.stringify({ source: { mimeType, isImage: String(mimeType || '').startsWith('image/') }, ai: { model: 'gemini-3-flash-preview' }, document: docMeta || {} })]
+      [userId, null, category_id || null, type, Number.isFinite(amount) ? amount : 0, occurred_at_sql, description || null, inscricao_federal_out || null, JSON.stringify(finalMetadata)]
     );
     await query('UPDATE ingest_jobs SET status = ?, transaction_id = ?, ai_output = ?, next_attempt_at = NULL WHERE id = ?', ['done', insTx.insertId, JSON.stringify({ type, amount, occurred_at, description, category_id }), jobId]);
   } catch (err) {
