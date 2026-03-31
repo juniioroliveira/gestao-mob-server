@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import routes from './routes/index.js';
 import path from 'path';
+import { processDueSalaries } from './routes/family.js';
 import { config } from './config/env.js';
 import { ensureDemoUser } from './bootstrap/demo-user.js';
 import { query } from './db/query.js';
@@ -97,6 +98,12 @@ setTimeout(async () => {
   await pump();
   setInterval(pump, config.ingest?.pumpIntervalMs ?? 3000);
 }, 0);
+
+setInterval(async () => {
+  try {
+    await processDueSalaries();
+  } catch {}
+}, 60 * 1000);
 app.use((err, req, res, next) => {
   const payload = {
     error: 'internal_error',
