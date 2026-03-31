@@ -4,7 +4,7 @@ import { config } from '../../config/env.js';
 import { linkUserFromGooglePayload } from './user_link.js';
 import { verifyIdToken } from './verify_token.js';
 
-const router = Router();
+const router = Router(); 
 
 function sign(userId) {  
   return jwt.sign({ userId }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
