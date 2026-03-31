@@ -23,4 +23,7 @@ export const config = {
     staleMinutes: Number(process.env.INGEST_STALE_MINUTES || '10'),
     pumpIntervalMs: Number(process.env.INGEST_PUMP_INTERVAL_MS || '3000'),
   },
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID || '',
+  },
 };

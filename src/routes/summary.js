@@ -52,7 +52,7 @@ router.get('/summary/category-spend', async (req, res, next) => {
     if (!userId) return res.status(400).json({ error: 'userId_required' });
     const { from, to } = monthRange({ month: req.query.month, year: req.query.year });
     const rows = await query(
-      `SELECT c.id, c.name, COALESCE(SUM(t.amount),0) AS amount
+      `SELECT c.id, c.name, COALESCE(SUM(ABS(t.amount)),0) AS amount
        FROM categories c
        LEFT JOIN transactions t
          ON t.category_id = c.id
@@ -83,8 +83,8 @@ router.get('/summary/monthly', async (req, res, next) => {
         : monthRange({ month: req.query.month, year: req.query.year });
     const rows = await query(
       `SELECT 
-         COALESCE(SUM(CASE WHEN type='income' THEN amount END),0) AS income,
-         COALESCE(SUM(CASE WHEN type='expense' THEN amount END),0) AS expense
+         COALESCE(SUM(CASE WHEN type='income' THEN ABS(amount) END),0) AS income,
+         COALESCE(SUM(CASE WHEN type='expense' THEN ABS(amount) END),0) AS expense
        FROM transactions
        WHERE user_id = ? AND occurred_at BETWEEN ? AND ?`,
       [userId, range.from, range.to]
