@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../db/query.js';
 import { config } from '../config/env.js';
+import { ensureAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -51,6 +52,50 @@ router.get('/auth/me', async (req, res, next) => {
     const [row] = await query('SELECT id, name, email, created_at FROM users WHERE id = ?', [payload.userId]);
     if (!row) return res.status(404).json({ error: 'not_found' });
     res.json(row);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.put('/auth/me', ensureAuth, async (req, res, next) => {
+  try {
+    const userId = req.auth.userId;
+    const { name, email } = req.body || {};
+    if (!name && !email) return res.status(400).json({ error: 'invalid_body' });
+    if (email) {
+      const rows = await query('SELECT id FROM users WHERE email = ? AND id <> ?', [email, userId]);
+      if (rows.length) return res.status(409).json({ error: 'email_in_use' });
+    }
+    const fields = [];
+    const params = [];
+    if (name) {
+      fields.push('name = ?');
+      params.push(name);
+    }
+    if (email !== undefined) {
+      fields.push('email = ?');
+      params.push(email);
+    }
+    params.push(userId);
+    await query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, params);
+    const [row] = await query('SELECT id, name, email, created_at FROM users WHERE id = ?', [userId]);
+    res.json(row);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/auth/change-password', ensureAuth, async (req, res, next) => {
+  try {
+    const userId = req.auth.userId;
+    const { current_password, new_password } = req.body || {};
+    if (!current_password || !new_password) return res.status(400).json({ error: 'invalid_body' });
+    const [row] = await query('SELECT password_hash FROM users WHERE id = ?', [userId]);
+    const ok = await bcrypt.compare(current_password, row?.password_hash || '');
+    if (!ok) return res.status(401).json({ error: 'invalid_credentials' });
+    const hash = await bcrypt.hash(new_password, 10);
+    await query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, userId]);
+    res.json({ ok: 1 });
   } catch (e) {
     next(e);
   }
