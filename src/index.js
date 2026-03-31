@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import routes from './routes/index.js';
+import path from 'path';
 import { config } from './config/env.js';
 import { ensureDemoUser } from './bootstrap/demo-user.js';
 import { query } from './db/query.js';
@@ -9,6 +10,7 @@ import { processIngestJobById } from './routes/ai.js';
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(path.resolve(process.cwd(), 'uploads')));
 app.use((req, res, next) => {
   const start = Date.now();
   const method = req.method;

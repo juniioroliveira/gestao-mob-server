@@ -4,6 +4,10 @@ import jwt from 'jsonwebtoken';
 import { query } from '../db/query.js';
 import { config } from '../config/env.js';
 import { ensureAuth } from '../middleware/auth.js';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import sharp from 'sharp';
 
 const router = Router();
 
@@ -49,9 +53,28 @@ router.get('/auth/me', async (req, res, next) => {
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'unauthorized' });
     const payload = jwt.verify(token, config.jwtSecret);
-    const [row] = await query('SELECT id, name, email, created_at FROM users WHERE id = ?', [payload.userId]);
+    const [row] = await query('SELECT id, name, email, avatar_url, created_at FROM users WHERE id = ?', [payload.userId]);
     if (!row) return res.status(404).json({ error: 'not_found' });
     res.json(row);
+  } catch (e) {
+    next(e);
+  }
+});
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+router.post('/auth/avatar', ensureAuth, upload.single('avatar'), async (req, res, next) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'file_required' });
+    const userId = req.auth.userId;
+    const uploadDir = path.resolve(process.cwd(), 'uploads', 'avatars');
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const filename = `u${userId}_${Date.now()}.jpg`;
+    const fullPath = path.join(uploadDir, filename);
+    await sharp(req.file.buffer).resize(512, 512, { fit: 'cover' }).jpeg({ quality: 80 }).toFile(fullPath);
+    const publicPath = `/uploads/avatars/${filename}`;
+    await query('UPDATE users SET avatar_url = ? WHERE id = ?', [publicPath, userId]);
+    res.json({ avatar_url: publicPath });
   } catch (e) {
     next(e);
   }
