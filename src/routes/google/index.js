@@ -6,7 +6,7 @@ import { verifyIdToken } from './verify_token.js';
 
 const router = Router();
 
-function sign(userId) { 
+function sign(userId) {  
   return jwt.sign({ userId }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
 }
 
