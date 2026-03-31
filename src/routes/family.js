@@ -185,12 +185,18 @@ export async function processDueSalaries() {
     `SELECT s.id, s.member_id, s.amount, s.currency, s.start_date, s.end_date, s.frequency, s.active, s.next_run_at, m.user_id, m.name AS member_name
      FROM member_salaries s
      JOIN family_members m ON m.id = s.member_id
-     WHERE s.active = 1 AND s.next_run_at IS NOT NULL AND s.next_run_at <= ? AND (s.end_date IS NULL OR s.next_run_at <= s.end_date)
-     ORDER BY s.next_run_at ASC, s.id ASC`,
-    [nowSql]
+     WHERE s.active = 1
+       AND (
+            (s.next_run_at IS NOT NULL AND s.next_run_at <= ?)
+         OR (s.next_run_at IS NULL AND s.start_date IS NOT NULL AND s.start_date <= ?)
+       )
+       AND (s.end_date IS NULL OR COALESCE(s.next_run_at, s.start_date) <= s.end_date)
+     ORDER BY COALESCE(s.next_run_at, s.start_date) ASC, s.id ASC`,
+    [nowSql, nowSql]
   );
   for (const s of due) {
-    const runAt = new Date(String(s.next_run_at).replace('T', ' ').replace('Z', ''));
+    const runBaseStr = s.next_run_at || s.start_date;
+    const runAt = new Date(String(runBaseStr).replace('T', ' ').replace('Z', ''));
     const now = new Date();
     const targetDay = runAt.getDate();
     const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
