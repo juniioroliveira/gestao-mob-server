@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { query } from '../db/query.js';
+import { ensureAuth } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -69,13 +70,36 @@ router.delete('/family/members/:id', async (req, res, next) => {
   }
 });
 
+router.post('/family/salaries/repair-occurrence', ensureAuth, async (req, res, next) => {
+  try {
+    const userId = Number(req.auth.userId);
+    const upNext = await query(
+      `UPDATE member_salaries s
+       JOIN family_members m ON m.id = s.member_id
+       SET s.next_run_at = COALESCE(s.next_run_at, s.start_date)
+       WHERE m.user_id = ? AND s.start_date IS NOT NULL`,
+      [userId]
+    );
+    const fixTx = await query(
+      `UPDATE transactions 
+       SET occurred_at = COALESCE(salary_run_at, NOW())
+       WHERE user_id = ? AND type='income' AND description LIKE 'Salário - %' AND occurred_at IS NULL`,
+      [userId]
+    );
+    const result = await processDueSalaries();
+    res.json({ nextBackfilled: upNext?.affectedRows ?? 0, txFixed: fixTx?.affectedRows ?? 0, processed: result.processed });
+  } catch (e) {
+    next(e);
+  }
+});
+
 // Member Salaries
 router.get('/family/members/:id/salaries', async (req, res, next) => {
   try {
     const memberId = Number(req.params.id);
     if (!memberId) return res.status(400).json({ error: 'memberId_required' });
     const rows = await query(
-      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, next_run_at, last_run_at, created_at FROM member_salaries WHERE member_id = ? ORDER BY start_date DESC, id DESC',
+      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, day_of_month, next_run_at, last_run_at, created_at FROM member_salaries WHERE member_id = ? ORDER BY start_date DESC, id DESC',
       [memberId]
     );
     res.json(rows);
@@ -88,19 +112,20 @@ router.post('/family/members/:id/salaries', async (req, res, next) => {
   try {
     const memberId = Number(req.params.id);
     if (!memberId) return res.status(400).json({ error: 'memberId_required' });
-    const { amount, currency, start_date, end_date, frequency, active } = req.body || {};
+    const { amount, currency, start_date, end_date, frequency, active, day_of_month } = req.body || {};
     if (amount == null || !start_date) return res.status(400).json({ error: 'invalid_body' });
     const freq = ['monthly', 'biweekly', 'weekly'].includes(String(frequency)) ? String(frequency) : 'monthly';
     const act = active != null ? (Number(active) ? 1 : 0) : 1;
     const start = new Date(String(start_date).replace('T', ' ').replace('Z', ''));
-    const next = computeNextSalaryRun({ frequency: freq }, start);
+    const dom = Number(day_of_month || start.getDate());
+    const next = computeNextSalaryRun({ frequency: freq, day_of_month: dom }, start);
     const nextSql = toSqlDatetime(next);
     const result = await query(
-      'INSERT INTO member_salaries (member_id, amount, currency, start_date, end_date, frequency, active, next_run_at) VALUES (?, ?, COALESCE(?, "BRL"), ?, ?, ?, ?, ?)',
-      [memberId, Number(amount), currency || null, String(start_date), end_date || null, freq, act, nextSql]
+      'INSERT INTO member_salaries (member_id, amount, currency, start_date, end_date, frequency, active, day_of_month, next_run_at) VALUES (?, ?, COALESCE(?, "BRL"), ?, ?, ?, ?, ?, ?)',
+      [memberId, Number(amount), currency || null, String(start_date), end_date || null, freq, act, dom, nextSql]
     );
     const [row] = await query(
-      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, next_run_at, last_run_at, created_at FROM member_salaries WHERE id = ?',
+      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, day_of_month, next_run_at, last_run_at, created_at FROM member_salaries WHERE id = ?',
       [result.insertId]
     );
     res.status(201).json(row);
@@ -113,7 +138,7 @@ router.get('/family/salaries/:id', async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const [row] = await query(
-      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, next_run_at, last_run_at, created_at FROM member_salaries WHERE id = ?',
+      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, day_of_month, next_run_at, last_run_at, created_at FROM member_salaries WHERE id = ?',
       [id]
     );
     if (!row) return res.status(404).json({ error: 'not_found' });
@@ -126,16 +151,17 @@ router.get('/family/salaries/:id', async (req, res, next) => {
 router.put('/family/salaries/:id', async (req, res, next) => {
   try {
     const id = Number(req.params.id);
-    const { amount, currency, start_date, end_date, frequency, active, member_id } = req.body || {};
+    const { amount, currency, start_date, end_date, frequency, active, member_id, day_of_month } = req.body || {};
     const freq =
       frequency && ['monthly', 'biweekly', 'weekly'].includes(String(frequency)) ? String(frequency) : null;
     const act = active != null ? (Number(active) ? 1 : 0) : null;
+    const dom = day_of_month != null ? Number(day_of_month) : null;
     await query(
-      'UPDATE member_salaries SET member_id = COALESCE(?, member_id), amount = COALESCE(?, amount), currency = COALESCE(?, currency), start_date = COALESCE(?, start_date), end_date = COALESCE(?, end_date), frequency = COALESCE(?, frequency), active = COALESCE(?, active), next_run_at = CASE WHEN ? IS NOT NULL THEN ? ELSE next_run_at END WHERE id = ?',
-      [member_id ?? null, amount ?? null, currency || null, start_date || null, end_date || null, freq, act, start_date || null, start_date || null, id]
+      'UPDATE member_salaries SET member_id = COALESCE(?, member_id), amount = COALESCE(?, amount), currency = COALESCE(?, currency), start_date = COALESCE(?, start_date), end_date = COALESCE(?, end_date), frequency = COALESCE(?, frequency), active = COALESCE(?, active), day_of_month = COALESCE(?, day_of_month), next_run_at = CASE WHEN ? IS NOT NULL THEN ? ELSE next_run_at END WHERE id = ?',
+      [member_id ?? null, amount ?? null, currency || null, start_date || null, end_date || null, freq, act, dom, start_date || null, start_date || null, id]
     );
     const [row] = await query(
-      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, next_run_at, last_run_at, created_at FROM member_salaries WHERE id = ?',
+      'SELECT id, member_id, amount, currency, start_date, end_date, frequency, active, day_of_month, next_run_at, last_run_at, created_at FROM member_salaries WHERE id = ?',
       [id]
     );
     if (!row) return res.status(404).json({ error: 'not_found' });
@@ -169,7 +195,7 @@ export function computeNextSalaryRun(rule, base) {
   const from = new Date(base.getTime());
   if (freq === 'weekly') { from.setDate(from.getDate() + 7); return from; }
   if (freq === 'biweekly') { from.setDate(from.getDate() + 14); return from; }
-  const day = base.getDate();
+  const day = Number(rule.day_of_month || base.getDate());
   const target = new Date(from.getFullYear(), from.getMonth(), 1);
   target.setMonth(target.getMonth() + 1);
   const daysInMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
@@ -182,7 +208,7 @@ export async function processDueSalaries() {
   const now = new Date();
   const nowSql = toSqlDatetime(now);
   const due = await query(
-    `SELECT s.id, s.member_id, s.amount, s.currency, s.start_date, s.end_date, s.frequency, s.active, s.next_run_at, m.user_id, m.name AS member_name
+    `SELECT s.id, s.member_id, s.amount, s.currency, s.start_date, s.end_date, s.frequency, s.active, s.day_of_month, s.next_run_at, m.user_id, m.name AS member_name
      FROM member_salaries s
      JOIN family_members m ON m.id = s.member_id
      WHERE s.active = 1
@@ -197,19 +223,20 @@ export async function processDueSalaries() {
   for (const s of due) {
     const runBaseStr = s.next_run_at || s.start_date;
     const runAt = new Date(String(runBaseStr).replace('T', ' ').replace('Z', ''));
-    const now = new Date();
-    const targetDay = runAt.getDate();
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const now2 = new Date();
+    const targetDay = Number(s.day_of_month || (isNaN(runAt.getTime()) ? now2.getDate() : runAt.getDate()));
+    const lastDay = new Date(now2.getFullYear(), now2.getMonth() + 1, 0).getDate();
     const finalDay = Math.min(targetDay, lastDay);
-    const occurredDt = new Date(now.getFullYear(), now.getMonth(), finalDay, 12, 0, 0);
+    const occurredDt = new Date(now2.getFullYear(), now2.getMonth(), finalDay, 12, 0, 0);
     const occurred = toSqlDatetime(occurredDt);
-    const runAtSql = toSqlDatetime(runAt);
+    const runAtSql = isNaN(runAt.getTime()) ? null : toSqlDatetime(runAt);
     const ins = await query(
       'INSERT IGNORE INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, salary_id, salary_run_at) VALUES (?, ?, ?, ?, ?, COALESCE(?, NOW()), ?, ?, ?)',
       [s.user_id, null, null, 'income', s.amount, occurred, `Salário - ${s.member_name}`, s.id, runAtSql]
     );
     if (Number(ins?.affectedRows || 0) === 1) {
-      const next = computeNextSalaryRun({ frequency: s.frequency }, runAt);
+      const baseForNext = isNaN(runAt.getTime()) ? new Date() : runAt;
+      const next = computeNextSalaryRun({ frequency: s.frequency, day_of_month: targetDay }, baseForNext);
       const nextSql = toSqlDatetime(next);
       await query('UPDATE member_salaries SET last_run_at = ?, next_run_at = ? WHERE id = ?', [occurred, nextSql, s.id]);
     }
