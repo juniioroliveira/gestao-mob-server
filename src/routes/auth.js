@@ -7,6 +7,7 @@ import { ensureAuth } from '../middleware/auth.js';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 
 const router = Router();
@@ -67,7 +68,9 @@ router.post('/auth/avatar', ensureAuth, upload.single('avatar'), async (req, res
   try {
     if (!req.file) return res.status(400).json({ error: 'file_required' });
     const userId = req.auth.userId;
-    const uploadDir = path.resolve(process.cwd(), 'uploads', 'avatars');
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = path.resolve(__dirname, '..', '..');
+    const uploadDir = path.resolve(projectRoot, 'uploads', 'avatars');
     fs.mkdirSync(uploadDir, { recursive: true });
     const filename = `u${userId}_${Date.now()}.jpg`;
     const fullPath = path.join(uploadDir, filename);
