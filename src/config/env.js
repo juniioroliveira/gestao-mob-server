@@ -24,6 +24,6 @@ export const config = {
     pumpIntervalMs: Number(process.env.INGEST_PUMP_INTERVAL_MS || '3000'),
   },
   google: {
-    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    clientId: process.env.GOOGLE_CLIENT_ID || '833054675135-23ufdm6o44k4kjhfc73sc7qdg0mnl0mq.apps.googleusercontent.com',
   },
 };
