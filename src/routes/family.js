@@ -191,7 +191,12 @@ export async function processDueSalaries() {
   );
   for (const s of due) {
     const runAt = new Date(String(s.next_run_at).replace('T', ' ').replace('Z', ''));
-    const occurred = toSqlDatetime(new Date());
+    const now = new Date();
+    const targetDay = runAt.getDate();
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const finalDay = Math.min(targetDay, lastDay);
+    const occurredDt = new Date(now.getFullYear(), now.getMonth(), finalDay, 12, 0, 0);
+    const occurred = toSqlDatetime(occurredDt);
     const runAtSql = toSqlDatetime(runAt);
     const ins = await query(
       'INSERT IGNORE INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, salary_id, salary_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
