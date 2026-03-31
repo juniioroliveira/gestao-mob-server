@@ -199,7 +199,7 @@ export async function processDueSalaries() {
     const occurred = toSqlDatetime(occurredDt);
     const runAtSql = toSqlDatetime(runAt);
     const ins = await query(
-      'INSERT IGNORE INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, salary_id, salary_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT IGNORE INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, salary_id, salary_run_at) VALUES (?, ?, ?, ?, ?, COALESCE(?, NOW()), ?, ?, ?)',
       [s.user_id, null, null, 'income', s.amount, occurred, `Salário - ${s.member_name}`, s.id, runAtSql]
     );
     if (Number(ins?.affectedRows || 0) === 1) {
