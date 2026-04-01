@@ -98,6 +98,7 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
     const userId = Number(req.auth.userId);
     const now = new Date();
     const force = String(req.query.force || '0') === '1';
+    const forceAll = String(req.query.forceAll || req.query.force_all || '0') === '1';
     const members = await query(
       `SELECT s.id, s.member_id, s.frequency, s.day_of_month, s.start_date
        FROM member_salaries s
@@ -107,7 +108,7 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
     );
     let updated = 0;
     const details = [];
-    console.log(`[salary-reindex] user=${userId} items=${members.length} force=${force}`);
+    console.log(`[salary-reindex] user=${userId} items=${members.length} force=${force} forceAll=${forceAll}`);
     for (const s of members) {
       const freq = String(s.frequency || 'monthly');
       const dom = Number(s.day_of_month || new Date(s.start_date).getDate());
@@ -118,7 +119,11 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
         const daysInThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const candidateDay = Math.min(dom, daysInThisMonth);
         const candidate = new Date(now.getFullYear(), now.getMonth(), candidateDay, 12, 0, 0);
-        if (candidate.getTime() >= now.getTime()) {
+        if (forceAll) {
+          next = new Date(now.getTime() - 5000);
+          reason = 'forceAll';
+          forced = true;
+        } else if (candidate.getTime() >= now.getTime()) {
           next = candidate;
           reason = 'this_month';
           if (force && dom === now.getDate()) {
@@ -131,30 +136,33 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
           reason = 'next_month';
         }
       } else if (freq === 'biweekly') {
-        next = new Date(now.getTime());
-        next.setDate(next.getDate() + 14);
-        reason = 'biweekly+14d';
-        if (force) {
+        if (forceAll || force) {
           next = new Date(now.getTime() - 5000);
-          reason = 'forced';
+          reason = forceAll ? 'forceAll' : 'forced';
           forced = true;
+        } else {
+          next = new Date(now.getTime());
+          next.setDate(next.getDate() + 14);
+          reason = 'biweekly+14d';
         }
       } else if (freq === 'weekly') {
-        next = new Date(now.getTime());
-        next.setDate(next.getDate() + 7);
-        reason = 'weekly+7d';
-        if (force) {
+        if (forceAll || force) {
           next = new Date(now.getTime() - 5000);
-          reason = 'forced';
+          reason = forceAll ? 'forceAll' : 'forced';
           forced = true;
+        } else {
+          next = new Date(now.getTime());
+          next.setDate(next.getDate() + 7);
+          reason = 'weekly+7d';
         }
       } else {
-        next = computeNextSalaryRun({ frequency: freq, day_of_month: dom }, now);
-        reason = 'fallback';
-        if (force) {
+        if (forceAll || force) {
           next = new Date(now.getTime() - 5000);
-          reason = 'forced';
+          reason = forceAll ? 'forceAll' : 'forced';
           forced = true;
+        } else {
+          next = computeNextSalaryRun({ frequency: freq, day_of_month: dom }, now);
+          reason = 'fallback';
         }
       }
       const nextSql = toSqlDatetime(next);
@@ -176,6 +184,43 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
     const result = await processDueSalaries();
     console.log(`[salary-reindex] user=${userId} reindexed=${updated} processed=${result.processed}`);
     res.json({ nextReindexed: updated, processed: result.processed, items: details });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/family/salaries/backfill-month', ensureAuth, async (req, res, next) => {
+  try {
+    const userId = Number(req.auth.userId);
+    const monthParam = Number(req.query.month || req.body?.month);
+    const yearParam = Number(req.query.year || req.body?.year);
+    if (!monthParam || monthParam < 1 || monthParam > 12) return res.status(400).json({ error: 'invalid_month' });
+    const base = new Date();
+    const year = Number.isFinite(yearParam) && yearParam > 1900 ? yearParam : base.getFullYear();
+    const daysInMonth = new Date(year, monthParam, 0).getDate();
+    const members = await query(
+      `SELECT s.id, s.member_id, s.amount, s.frequency, s.day_of_month, s.start_date, m.user_id, m.name AS member_name
+       FROM member_salaries s
+       JOIN family_members m ON m.id = s.member_id
+       WHERE m.user_id = ? AND s.active = 1`,
+      [userId]
+    );
+    let inserted = 0;
+    const items = [];
+    for (const s of members) {
+      const dom = Number(s.day_of_month || new Date(s.start_date).getDate());
+      const day = Math.min(dom, daysInMonth);
+      const occurred = toSqlDatetime(new Date(year, monthParam - 1, day, 12, 0, 0));
+      const runAt = occurred; // usar a mesma data como chave de idempotência para o mês alvo
+      const ins = await query(
+        'INSERT IGNORE INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, salary_id, salary_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [userId, null, null, 'income', s.amount, occurred, `Salário - ${s.member_name}`, s.id, runAt]
+      );
+      const ok = Number(ins?.affectedRows || 0) === 1;
+      if (ok) inserted += 1;
+      items.push({ salary_id: s.id, day_of_month: dom, occurred_at: occurred, inserted: ok });
+    }
+    res.json({ month: monthParam, year, inserted, items });
   } catch (e) {
     next(e);
   }
