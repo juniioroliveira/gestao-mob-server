@@ -316,7 +316,7 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
     let description = cleanDescription(parsed?.description);
     const nature = toNatureLabel(description);
     if (nature) description = nature;
-    const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
+    let type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
     let category_id = null;
     if (Array.isArray(catList) && catList.length) {
       const cid = Number(parsed?.category_id);
@@ -385,6 +385,20 @@ router.post('/ai/extract-transaction', upload.single('file'), async (req, res, n
         } catch {}
       }
 
+      // Normalize transfer PIX to income/expense by direction heuristics
+      const descNorm = normalizeText(description);
+      if (type === 'transfer' || /pix/.test(descNorm) || /transfer/.test(descNorm)) {
+        let dir = null;
+        const mdoc = docMeta || {};
+        const dstr = normalizeText(JSON.stringify(mdoc));
+        if (/receb|credit|entrada/.test(descNorm) || /receb|credit|entrada/.test(dstr)) dir = 'in';
+        if (/envio|enviado|sa[ií]da|debito|pag(o|amento)|transfer[êe]ncia realizada/.test(descNorm) || /envio|enviado|sa[ií]da|debito|pago|pagamento/.test(dstr)) dir = 'out';
+        if (dir === 'in') type = 'income';
+        else if (dir === 'out') type = 'expense';
+        else type = 'expense';
+        if (!docMeta.document) docMeta.document = {};
+        docMeta.document.pix_direction = dir || 'out';
+      }
       const metadata = {
       source: { mimeType, isImage: String(mimeType || '').startsWith('image/') },
       document: {
@@ -632,7 +646,7 @@ export async function processIngestJobById(jobId) {
       return base || isr || '';
     }
     let description = cleanDescription(parsed?.description);
-    const type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
+    let type = parsed?.type === 'income' ? 'income' : parsed?.type === 'transfer' ? 'transfer' : 'expense';
     let category_id = null;
     if (Array.isArray(catList) && catList.length) {
       const cid = Number(parsed?.category_id);
@@ -722,6 +736,19 @@ export async function processIngestJobById(jobId) {
     if (savedImagePublicPath) {
       finalMetadata.document = finalMetadata.document || {};
       finalMetadata.document.image_url = savedImagePublicPath;
+    }
+    // Normalize transfer PIX to income/expense by direction heuristics for async flow as well
+    const descNorm2 = normalizeText(description);
+    if (type === 'transfer' || /pix/.test(descNorm2) || /transfer/.test(descNorm2)) {
+      let dir = null;
+      const dstr2 = normalizeText(JSON.stringify(docMeta || {}));
+      if (/receb|credit|entrada/.test(descNorm2) || /receb|credit|entrada/.test(dstr2)) dir = 'in';
+      if (/envio|enviado|sa[ií]da|debito|pag(o|amento)|transfer[êe]ncia realizada/.test(descNorm2) || /envio|enviado|sa[ií]da|debito|pago|pagamento/.test(dstr2)) dir = 'out';
+      if (dir === 'in') type = 'income';
+      else if (dir === 'out') type = 'expense';
+      else type = 'expense';
+      finalMetadata.document = finalMetadata.document || {};
+      finalMetadata.document.pix_direction = dir || 'out';
     }
     const insTx = await query(
       'INSERT INTO transactions (user_id, account_id, category_id, type, amount, occurred_at, description, inscricao_federal, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
