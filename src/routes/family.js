@@ -105,32 +105,54 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
       [userId]
     );
     let updated = 0;
+    const details = [];
+    console.log(`[salary-reindex] user=${userId} items=${members.length}`);
     for (const s of members) {
       const freq = String(s.frequency || 'monthly');
       const dom = Number(s.day_of_month || new Date(s.start_date).getDate());
       let next;
+      let reason = 'calc';
       if (freq === 'monthly') {
         const daysInThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const candidateDay = Math.min(dom, daysInThisMonth);
         const candidate = new Date(now.getFullYear(), now.getMonth(), candidateDay, 12, 0, 0);
-        next = candidate.getTime() >= now.getTime()
-          ? candidate
-          : computeNextSalaryRun({ frequency: 'monthly', day_of_month: dom }, candidate);
+        if (candidate.getTime() >= now.getTime()) {
+          next = candidate;
+          reason = 'this_month';
+        } else {
+          next = computeNextSalaryRun({ frequency: 'monthly', day_of_month: dom }, candidate);
+          reason = 'next_month';
+        }
       } else if (freq === 'biweekly') {
         next = new Date(now.getTime());
         next.setDate(next.getDate() + 14);
+        reason = 'biweekly+14d';
       } else if (freq === 'weekly') {
         next = new Date(now.getTime());
         next.setDate(next.getDate() + 7);
+        reason = 'weekly+7d';
       } else {
         next = computeNextSalaryRun({ frequency: freq, day_of_month: dom }, now);
+        reason = 'fallback';
       }
       const nextSql = toSqlDatetime(next);
+      const prev = await query('SELECT next_run_at FROM member_salaries WHERE id = ?', [s.id]);
+      const prevNext = prev?.[0]?.next_run_at || null;
       const resUpd = await query('UPDATE member_salaries SET next_run_at = ? WHERE id = ?', [nextSql, s.id]);
       updated += Number(resUpd?.affectedRows || 0);
+      details.push({
+        salary_id: s.id,
+        frequency: freq,
+        day_of_month: dom,
+        prev_next_run_at: prevNext,
+        new_next_run_at: nextSql,
+        will_process_now: nextSql <= toSqlDatetime(now),
+        reason,
+      });
     }
     const result = await processDueSalaries();
-    res.json({ nextReindexed: updated, processed: result.processed });
+    console.log(`[salary-reindex] user=${userId} reindexed=${updated} processed=${result.processed}`);
+    res.json({ nextReindexed: updated, processed: result.processed, items: details });
   } catch (e) {
     next(e);
   }
