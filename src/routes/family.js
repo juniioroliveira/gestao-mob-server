@@ -93,6 +93,49 @@ router.post('/family/salaries/repair-occurrence', ensureAuth, async (req, res, n
   }
 });
 
+router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, next) => {
+  try {
+    const userId = Number(req.auth.userId);
+    const now = new Date();
+    const members = await query(
+      `SELECT s.id, s.member_id, s.frequency, s.day_of_month, s.start_date
+       FROM member_salaries s
+       JOIN family_members m ON m.id = s.member_id
+       WHERE m.user_id = ? AND s.active = 1`,
+      [userId]
+    );
+    let updated = 0;
+    for (const s of members) {
+      const freq = String(s.frequency || 'monthly');
+      const dom = Number(s.day_of_month || new Date(s.start_date).getDate());
+      let next;
+      if (freq === 'monthly') {
+        const daysInThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const candidateDay = Math.min(dom, daysInThisMonth);
+        const candidate = new Date(now.getFullYear(), now.getMonth(), candidateDay, 12, 0, 0);
+        next = candidate.getTime() >= now.getTime()
+          ? candidate
+          : computeNextSalaryRun({ frequency: 'monthly', day_of_month: dom }, candidate);
+      } else if (freq === 'biweekly') {
+        next = new Date(now.getTime());
+        next.setDate(next.getDate() + 14);
+      } else if (freq === 'weekly') {
+        next = new Date(now.getTime());
+        next.setDate(next.getDate() + 7);
+      } else {
+        next = computeNextSalaryRun({ frequency: freq, day_of_month: dom }, now);
+      }
+      const nextSql = toSqlDatetime(next);
+      const resUpd = await query('UPDATE member_salaries SET next_run_at = ? WHERE id = ?', [nextSql, s.id]);
+      updated += Number(resUpd?.affectedRows || 0);
+    }
+    const result = await processDueSalaries();
+    res.json({ nextReindexed: updated, processed: result.processed });
+  } catch (e) {
+    next(e);
+  }
+});
+
 // Member Salaries
 router.get('/family/members/:id/salaries', async (req, res, next) => {
   try {
