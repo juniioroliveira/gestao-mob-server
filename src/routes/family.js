@@ -97,6 +97,7 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
   try {
     const userId = Number(req.auth.userId);
     const now = new Date();
+    const force = String(req.query.force || '0') === '1';
     const members = await query(
       `SELECT s.id, s.member_id, s.frequency, s.day_of_month, s.start_date
        FROM member_salaries s
@@ -106,12 +107,13 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
     );
     let updated = 0;
     const details = [];
-    console.log(`[salary-reindex] user=${userId} items=${members.length}`);
+    console.log(`[salary-reindex] user=${userId} items=${members.length} force=${force}`);
     for (const s of members) {
       const freq = String(s.frequency || 'monthly');
       const dom = Number(s.day_of_month || new Date(s.start_date).getDate());
       let next;
       let reason = 'calc';
+      let forced = false;
       if (freq === 'monthly') {
         const daysInThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const candidateDay = Math.min(dom, daysInThisMonth);
@@ -119,6 +121,11 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
         if (candidate.getTime() >= now.getTime()) {
           next = candidate;
           reason = 'this_month';
+          if (force && dom === now.getDate()) {
+            next = new Date(now.getTime() - 5000);
+            reason = 'forced_today';
+            forced = true;
+          }
         } else {
           next = computeNextSalaryRun({ frequency: 'monthly', day_of_month: dom }, candidate);
           reason = 'next_month';
@@ -127,13 +134,28 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
         next = new Date(now.getTime());
         next.setDate(next.getDate() + 14);
         reason = 'biweekly+14d';
+        if (force) {
+          next = new Date(now.getTime() - 5000);
+          reason = 'forced';
+          forced = true;
+        }
       } else if (freq === 'weekly') {
         next = new Date(now.getTime());
         next.setDate(next.getDate() + 7);
         reason = 'weekly+7d';
+        if (force) {
+          next = new Date(now.getTime() - 5000);
+          reason = 'forced';
+          forced = true;
+        }
       } else {
         next = computeNextSalaryRun({ frequency: freq, day_of_month: dom }, now);
         reason = 'fallback';
+        if (force) {
+          next = new Date(now.getTime() - 5000);
+          reason = 'forced';
+          forced = true;
+        }
       }
       const nextSql = toSqlDatetime(next);
       const prev = await query('SELECT next_run_at FROM member_salaries WHERE id = ?', [s.id]);
@@ -148,6 +170,7 @@ router.post('/family/salaries/reindex-next-run', ensureAuth, async (req, res, ne
         new_next_run_at: nextSql,
         will_process_now: nextSql <= toSqlDatetime(now),
         reason,
+        forced,
       });
     }
     const result = await processDueSalaries();
