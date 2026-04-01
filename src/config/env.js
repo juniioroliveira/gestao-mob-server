@@ -26,4 +26,7 @@ export const config = {
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '833054675135-23ufdm6o44k4kjhfc73sc7qdg0mnl0mq.apps.googleusercontent.com',
   },
+  salaries: {
+    pumpIntervalMs: Number(process.env.SALARY_PUMP_INTERVAL_MS || '60000'),
+  },
 };

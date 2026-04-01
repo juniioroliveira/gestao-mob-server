@@ -107,7 +107,7 @@ setInterval(async () => {
   try {
     await processDueSalaries();
   } catch {}
-}, 60 * 1000);
+}, config.salaries?.pumpIntervalMs ?? 60 * 1000);
 app.use((err, req, res, next) => {
   const payload = {
     error: 'internal_error',
