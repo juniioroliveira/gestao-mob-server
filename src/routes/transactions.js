@@ -128,15 +128,15 @@ router.get('/transactions/pending-occurrence', async (req, res, next) => {
     if (!userId) return res.status(400).json({ error: 'userId_required' });
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
-    const countRows = await query(
-      'SELECT COUNT(*) AS c FROM transactions WHERE user_id = ? AND occurred_at IS NULL',
+  const countRows = await query(
+      'SELECT COUNT(*) AS c FROM transactions WHERE user_id = ? AND occurred_at IS NULL AND NOT (type = \'income\' AND description LIKE \'Salário - %\')',
       [userId]
     );
     const total = Number(countRows?.[0]?.c || 0);
     const items = await query(
       `SELECT id, user_id, account_id, category_id, member_id, type, amount, occurred_at, description, inscricao_federal, metadata, created_at
        FROM transactions
-       WHERE user_id = ? AND occurred_at IS NULL
+       WHERE user_id = ? AND occurred_at IS NULL AND NOT (type = 'income' AND description LIKE 'Salário - %')
        ORDER BY created_at DESC, id DESC
        LIMIT ? OFFSET ?`,
       [userId, limit, offset]
@@ -170,7 +170,7 @@ router.get('/transactions/pending-validation', async (req, res, next) => {
     if (!userId) return res.status(400).json({ error: 'userId_required' });
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
-    const where = 'user_id = ? AND (occurred_at IS NULL OR category_id IS NULL OR description IS NULL OR description = \'\')';
+  const where = 'user_id = ? AND (occurred_at IS NULL OR category_id IS NULL OR description IS NULL OR description = \'\') AND NOT (type = \'income\' AND description LIKE \'Salário - %\')';
     const countRows = await query(`SELECT COUNT(*) AS c FROM transactions WHERE ${where}`, [userId]);
     const total = Number(countRows?.[0]?.c || 0);
     const items = await query(
