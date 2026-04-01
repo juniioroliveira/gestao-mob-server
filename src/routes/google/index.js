@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import { config } from '../../config/env.js';
 import { linkUserFromGooglePayload } from './user_link.js';
 import { verifyIdToken } from './verify_token.js';
-
+ 
 const router = Router(); 
 
 function sign(userId) {  
