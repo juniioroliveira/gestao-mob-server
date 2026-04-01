@@ -2,7 +2,7 @@ import { transaction } from './query.js';
 
 const MIGRATION_NAME = '0011_member_salaries_day_of_month';
 
-async function run() {
+async function run() { 
   await transaction(async (conn) => {
     await conn.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
